@@ -9,18 +9,22 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 
 ## Expected Directory Structure
 ```text
-[Your Report Folder]/
-├── File1.htm
-├── File2.htm
-└── analysis/
-    └── output_20231223_120000/        <-- Created in Step 1
-        ├── report_list.csv
-        ├── Portfolio_Chart.png        <-- Created in Step 3
-        ├── Drawdown_Chart.png         <-- Created in Step 3
-        ├── Full_Analysis.md           <-- Created in Step 3
-        └── Trades/                    <-- Created in Step 2
-            ├── selected_trades_SymbolA.csv
-            └── selected_trades_SymbolB.csv
+[Parent Directory]/
+├── [Your Report Folder]/
+│   ├── File1.htm
+│   ├── File2.htm
+│   └── analysis/
+│       └── output_20231223_120000/        <-- Created in Step 1
+│           ├── report_list.csv
+│           ├── Portfolio_Chart.png        <-- Created in Step 3
+│           ├── Drawdown_Chart.png         <-- Created in Step 3
+│           ├── Full_Analysis.md           <-- Created in Step 3
+│           └── Trades/                    <-- Created in Step 2
+│               ├── selected_trades_SymbolA.csv
+│               └── selected_trades_SymbolB.csv
+└── CSV/                                   <-- Parquet files for each HTML
+    ├── File1.parquet
+    └── File2.parquet
 ```
 
 ## Step-by-Step Instructions

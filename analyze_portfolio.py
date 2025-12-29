@@ -263,6 +263,44 @@ def main():
         f.write("## Detailed Per-Report Analysis\n\n")
         
         all_trades_files = glob.glob(os.path.join(trades_folder, "all_trades_*.csv"))
+        
+        def load_parquet_data(html_file_path):
+            """Tries to find and load corresponding parquet file from sibling CSV folder."""
+            try:
+                base_dir = os.path.dirname(html_file_path)
+                csv_folder = os.path.join(os.path.dirname(base_dir), "CSV")
+                if not os.path.exists(csv_folder):
+                    return None
+                
+                filename_no_ext = os.path.splitext(os.path.basename(html_file_path))[0]
+                parquet_pattern = os.path.join(csv_folder, f"{filename_no_ext}*.parquet")
+                matches = glob.glob(parquet_pattern)
+                
+                if not matches:
+                    return None
+                    
+                p_df = pd.read_parquet(matches[0])
+                if p_df.empty: return None
+                
+                # Parse tab-separated format
+                cols = p_df.columns[0].split('\t')
+                data = [row[0].split('\t') for row in p_df.values]
+                df_parsed = pd.DataFrame(data, columns=cols)
+                
+                # Cleanup names and types
+                df_parsed.columns = [c.replace('<', '').replace('>', '').strip() for c in df_parsed.columns]
+                df_parsed['DATE'] = pd.to_datetime(df_parsed['DATE'], format='%Y.%m.%d %H:%M', errors='coerce')
+                df_parsed = df_parsed.dropna(subset=['DATE'])
+                
+                for c in ['BALANCE', 'EQUITY']:
+                    if c in df_parsed.columns:
+                        df_parsed[c] = pd.to_numeric(df_parsed[c], errors='coerce').fillna(0)
+                        
+                return df_parsed.sort_values('DATE')
+            except Exception as e:
+                print(f"Warning: Could not parse parquet for {html_file_path}: {e}")
+                return None
+
         if not all_trades_files:
             f.write("No detailed trade files found.\n")
         else:
@@ -271,17 +309,34 @@ def main():
             # Create sets for easy lookup
             included_files = set(df_deals['SourceFile'].unique()) if not df_deals.empty else set()
             
+            # Get original HTML paths from report_list.csv for parquet lookup
+            html_path_map = {}
+            if os.path.exists(report_list_path):
+                try:
+                    df_list_tmp = pd.read_csv(report_list_path)
+                    for _, row in df_list_tmp.iterrows():
+                        html_path_map[os.path.basename(row['FilePath'])] = row['FilePath']
+                except: pass
+
             for atf in all_trades_files:
                 report_basename = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
-                # Find original filename (assuming it ends with .html)
-                original_filename = report_basename + ".html"
+                original_filename = report_basename + ".html" # Fallback
+                # Try to get actual original filename from map (could be .htm or .html)
+                full_html_path = None
+                for k in html_path_map:
+                    if os.path.splitext(k)[0] == report_basename:
+                        original_filename = k
+                        full_html_path = html_path_map[k]
+                        break
                 
-                print(f"Generating per-file charts for: {report_basename}...")
                 df_at = pd.read_csv(atf)
                 
-                # Calculate DealPnL
+                # Calculate DealPnL - exclude 'balance' type rows to get profit only
+                df_at['Direction_lower'] = df_at['Direction'].astype(str).str.lower()
+                df_pnl_only = df_at[df_at['Direction_lower'].isin(['in', 'out', 'in/out'])]
+                
                 df_at['DealPnL'] = df_at['Profit'] + df_at['Commission'] + df_at['Swap']
-                total_pnl = df_at['DealPnL'].sum()
+                total_pnl = df_pnl_only['Profit'].sum() + df_pnl_only['Commission'].sum() + df_pnl_only['Swap'].sum()
                 
                 # Determine Status
                 status = "Unknown"
@@ -303,37 +358,84 @@ def main():
                         status = "Skipped"
                         reason = "Date range"
                     else:
-                        status = "Partially Included" # Should not happen with current logic but safe to have
+                        status = "Partially Included"
 
                 df_at['Time'] = pd.to_datetime(df_at['Time'])
                 
-                # Balance calculation
+                # Load parquet data if available
+                df_parquet = load_parquet_data(full_html_path) if full_html_path else None
+                
+                # Balance calculation from HTML trades (for fallback or comparison)
                 df_at_sorted = df_at.sort_values('Time')
                 exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
-                
-                if exits.empty:
-                    continue
-                    
-                exits['CumPnL'] = exits['DealPnL'].cumsum()
-                exits['Balance'] = exits['CumPnL'] + args.base
-                exits['Peak'] = exits['Balance'].expanding().max()
-                exits['DD_Pct'] = (exits['Balance'] / exits['Peak'] - 1) * 100
                 
                 # Chart 1x3: Balance, Underwater, and Histogram
                 fig, (ax_bal, ax_dd, ax_hist) = plt.subplots(1, 3, figsize=(20, 6))
                 
-                # Plot 1: Balance Growth
-                ax_bal.plot(exits['Time'], exits['Balance'], color='blue', linewidth=1)
-                ax_bal.set_title(f'Balance Growth', fontsize=12)
-                ax_bal.set_ylabel('Balance')
+                max_dd_pct = 0.0
+                max_dd_abs = 0.0
+
+                if df_parquet is not None:
+                    # Filter parquet to match analysis date range
+                    df_pq_filtered = df_parquet[(df_parquet['DATE'] >= calc_start) & (df_parquet['DATE'] < calc_end)]
+                    
+                    if not df_pq_filtered.empty:
+                        # Plot 1: Balance & Equity Growth
+                        ax_bal.plot(df_pq_filtered['DATE'], df_pq_filtered['BALANCE'], color='blue', linewidth=1, label='Balance')
+                        ax_bal.plot(df_pq_filtered['DATE'], df_pq_filtered['EQUITY'], color='red', linewidth=0.8, alpha=0.7, label='Equity')
+                        ax_bal.set_title(f'Balance and Equity Growth', fontsize=12)
+                        ax_bal.legend()
+                        
+                        # Plot 2: Drawdown from Equity
+                        df_pq_filtered = df_pq_filtered.copy()
+                        df_pq_filtered['Peak'] = df_pq_filtered['EQUITY'].expanding().max()
+                        df_pq_filtered['DD_Pct'] = (df_pq_filtered['EQUITY'] / df_pq_filtered['Peak'] - 1) * 100
+                        
+                        ax_dd.fill_between(df_pq_filtered['DATE'], df_pq_filtered['DD_Pct'], 0, color='red', alpha=0.3)
+                        ax_dd.plot(df_pq_filtered['DATE'], df_pq_filtered['DD_Pct'], color='red', linewidth=0.8)
+                        ax_dd.set_title(f'Underwater Drawdown (Equity)', fontsize=12)
+
+                        # Add secondary Y-axis for absolute drawdown
+                        ax_dd_abs_plot = ax_dd.twinx()
+                        abs_diff = df_pq_filtered['EQUITY'] - df_pq_filtered['Peak']
+                        ax_dd_abs_plot.plot(df_pq_filtered['DATE'], abs_diff, alpha=0)
+                        ax_dd_abs_plot.set_ylabel('Drawdown Absolute')
+                        ax_dd_abs_plot.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+                        max_dd_pct = df_pq_filtered['DD_Pct'].min()
+                        max_dd_abs = abs_diff.min()
+                    else:
+                        df_parquet = None # Revert to fallback if date range filters out everything
+                
+                if df_parquet is None and not exits.empty:
+                    # Fallback to HTML trade data
+                    exits['CumPnL'] = exits['DealPnL'].cumsum()
+                    exits['Balance'] = exits['CumPnL'] + args.base
+                    exits['Peak'] = exits['Balance'].expanding().max()
+                    exits['DD_Pct'] = (exits['Balance'] / exits['Peak'] - 1) * 100
+                    
+                    ax_bal.plot(exits['Time'], exits['Balance'], color='blue', linewidth=1)
+                    ax_bal.set_title(f'Balance Growth', fontsize=12)
+                    
+                    ax_dd.fill_between(exits['Time'], exits['DD_Pct'], 0, color='red', alpha=0.3)
+                    ax_dd.plot(exits['Time'], exits['DD_Pct'], color='red', linewidth=0.8)
+                    ax_dd.set_title(f'Underwater Drawdown', fontsize=12)
+
+                    # Add secondary Y-axis for absolute drawdown
+                    ax_dd_abs_plot = ax_dd.twinx()
+                    abs_diff = exits['Balance'] - exits['Peak']
+                    ax_dd_abs_plot.plot(exits['Time'], abs_diff, alpha=0)
+                    ax_dd_abs_plot.set_ylabel('Drawdown Absolute')
+                    ax_dd_abs_plot.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+                    max_dd_pct = exits['DD_Pct'].min()
+                    max_dd_abs = abs_diff.min()
+
+                ax_bal.set_ylabel('Amount')
                 ax_bal.grid(True, alpha=0.3)
                 ax_bal.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
                 plt.setp(ax_bal.get_xticklabels(), rotation=30, ha='right')
                 
-                # Plot 2: Underwater Drawdown
-                ax_dd.fill_between(exits['Time'], exits['DD_Pct'], 0, color='red', alpha=0.3)
-                ax_dd.plot(exits['Time'], exits['DD_Pct'], color='red', linewidth=0.8)
-                ax_dd.set_title(f'Underwater Drawdown', fontsize=12)
                 ax_dd.set_ylabel('Drawdown %')
                 ax_dd.grid(True, alpha=0.3)
                 plt.setp(ax_dd.get_xticklabels(), rotation=30, ha='right')
@@ -358,10 +460,18 @@ def main():
                 per_file_chart_path = os.path.join(charts_folder, f"Chart_{report_basename}.png")
                 plt.savefig(per_file_chart_path)
                 plt.close()
+
+                print(f"Processed: {report_basename}")
+                print(f"  PnL: {total_pnl:,.2f}")
+                print(f"  Max DD: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)")
                 
                 f.write(f"### Report: {report_basename}\n\n")
                 f.write(f"- **Status**: {status} {'(' + reason + ')' if reason else ''}\n")
-                f.write(f"- **Total PnL**: {total_pnl:,.2f}\n\n")
+                f.write(f"- **Total PnL**: {total_pnl:,.2f}\n")
+                f.write(f"- **Max Drawdown**: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)\n")
+                if df_parquet is not None:
+                    f.write(f"- **Data Source**: Parquet (Balance & Equity)\n")
+                f.write("\n")
                 f.write(f"![{report_basename} Charts](charts/Chart_{report_basename}.png)\n\n")
 
     print(f"Analysis complete. Report saved to: {report_path}")
