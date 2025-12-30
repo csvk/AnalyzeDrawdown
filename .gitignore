@@ -1,2 +1,8 @@
 CSV/
 test_reports/
+analysis/
+HTML Reports/
+temp_parent/
+__pycache__/
+*.py[cod]
+*$py.class

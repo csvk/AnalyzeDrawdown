@@ -8,10 +8,11 @@ import argparse
 from datetime import datetime
 import numpy as np
 import math
+import webbrowser
 
 def main():
     parser = argparse.ArgumentParser(description='Comprehensive Portfolio Analysis')
-    parser.add_argument('output_folder', type=str, help='Path to the output folder created in Step 1 (e.g., analysis/output_*).')
+    parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1.')
     parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--base', type=float, default=100000.0, help='Base capital (default: 100,000)')
@@ -147,6 +148,16 @@ def main():
         # Create a placeholder or just don't save. Later code will check for file existence.
         print("Skipping Portfolio Overview chart as portfolio is empty.")
 
+    # 8. Pre-load report list for metadata and hyperlinks
+    report_list_path = os.path.join(output_dir, "report_list.csv")
+    html_path_map = {}
+    if os.path.exists(report_list_path):
+        try:
+            df_list_tmp = pd.read_csv(report_list_path)
+            for _, row in df_list_tmp.iterrows():
+                html_path_map[os.path.basename(row['FilePath'])] = row['FilePath']
+        except: pass
+
     # 8. Consolidated Monthly Contributor Table (with Gradient Color Coding)
     table_html = ""
     if not df_deals.empty:
@@ -190,10 +201,14 @@ def main():
         table_html += "</tr>\n</thead>\n<tbody>\n"
         
         for i, ((symbol, file_name), row) in enumerate(pivot_table.iterrows(), 1):
+            # Try to get absolute path for hyperlink
+            full_path = html_path_map.get(file_name, "")
+            file_link = f"<a href='file:///{full_path}' target='_blank'><code>{file_name}</code></a>" if full_path else f"<code>{file_name}</code>"
+            
             table_html += "<tr>"
             table_html += f"<td>{i}</td>"
             table_html += f"<td>{symbol}</td>"
-            table_html += f"<td><code>{file_name}</code></td>"
+            table_html += f"<td>{file_link}</td>"
             for val in row:
                 color = get_color(val, global_min, global_max)
                 table_html += f'<td style="background-color:{color}; color:black; text-align:right;">{val:.2f}</td>'
@@ -220,15 +235,14 @@ def main():
 
 
 
-    # 9. Compile Markdown Report
+    # 9. Compile HTML Report
     num_included = df_deals['SourceFile'].nunique()
     
-    # Try to find the total number of files and skipped files from report_list_<timestamp>.csv
+    # Try to find the total number of files and skipped files from report_list.csv
     num_total = "Unknown"
     explicitly_skipped = []
     overlapping_skipped = []
     
-    report_list_path = os.path.join(output_dir, "report_list.csv")
     if os.path.exists(report_list_path):
         try:
             df_list = pd.read_csv(report_list_path)
@@ -247,42 +261,84 @@ def main():
         except:
             pass
 
-    report_path = os.path.join(output_dir, "Full_Analysis.md")
+    report_path = os.path.join(output_dir, "Full_Analysis.html")
+    
+    css_style = """
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; background-color: #f4f7f6; }
+        h1, h2, h3 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; margin-top: 30px; }
+        .summary-box { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .summary-box p { margin: 5px 0; font-size: 1.1em; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; background-color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        th, td { padding: 12px 15px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #3498db; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        code { background-color: #eef; padding: 2px 4px; border-radius: 4px; font-family: monospace; }
+        .chart-container { text-align: center; margin: 30px 0; background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .chart-container img { max-width: 100%; height: auto; border-radius: 4px; }
+        ul { list-style-type: none; padding: 0; }
+        li { background: #fff; margin-bottom: 5px; padding: 10px; border-left: 5px solid #3498db; border-radius: 0 4px 4px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .status-included { color: #27ae60; font-weight: bold; }
+        .status-skipped { color: #e74c3c; font-weight: bold; }
+        .status-partial { color: #f39c12; font-weight: bold; }
+        .params-list { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; }
+        .params-list li { border-left: none; border: 1px solid #ddd; padding: 5px 10px; background: #fdfdfd; font-size: 0.9em; box-shadow: none; margin-bottom: 0; }
+    </style>
+    """
+
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("# Portfolio Analysis Report\n\n")
-        f.write(f"**Period:** {calc_start.date()} to {calc_end.date()}\n")
-        f.write(f"**Included Reports:** {num_included} / {num_total}\n")
-        f.write(f"**Base Capital:** {args.base:,.2f}\n")
+        f.write("<!DOCTYPE html>\n<html lang='en'>\n<head>\n")
+        f.write("    <meta charset='UTF-8'>\n")
+        f.write("    <meta name='viewport' content='width=device-width, initial-scale=1.0'>\n")
+        f.write("    <title>Portfolio Analysis Report</title>\n")
+        f.write(css_style)
+        f.write("</head>\n<body>\n")
+        
+        f.write("<h1>Portfolio Analysis Report</h1>\n")
+        f.write("<div class='summary-box'>\n")
+        f.write(f"<p><strong>Period:</strong> {calc_start.date()} to {calc_end.date()}</p>\n")
+        f.write(f"<p><strong>Included Reports:</strong> {num_included} / {num_total}</p>\n")
+        f.write(f"<p><strong>Base Capital:</strong> {args.base:,.2f}</p>\n")
         
         final_balance = portfolio['Balance'].iloc[-1] if not portfolio.empty and 'Balance' in portfolio.columns else args.base
-        f.write(f"**Final Balance:** {final_balance:,.2f}\n")
-        f.write(f"**Total Profit:** {(final_balance - args.base):,.2f}\n\n")
+        f.write(f"<p><strong>Final Balance:</strong> {final_balance:,.2f}</p>\n")
+        f.write(f"<p><strong>Total Profit:</strong> {(final_balance - args.base):,.2f}</p>\n")
+        f.write("</div>\n")
         
-        f.write("## Performance Charts\n\n")
+        f.write("<h2>Performance Charts</h2>\n")
         overview_path = "charts/Portfolio_Overview.png"
         if os.path.exists(os.path.join(output_dir, overview_path)):
-            f.write(f"![Portfolio Overview]({overview_path})\n\n")
+            f.write(f"<div class='chart-container'><img src='{overview_path}' alt='Portfolio Overview'></div>\n\n")
         else:
-            f.write("Portfolio Overview chart is not available (no portfolio-wide trades found).\n\n")
+            f.write("<p>Portfolio Overview chart is not available (no portfolio-wide trades found).</p>\n\n")
         
-        f.write(table_html)
+        # Monthly breakdown table (already HTML but needs title fixup)
+        # Note: table_html was constructed with markdown headers previously
+        table_html_clean = table_html.replace("## Monthly Contributor Breakdown\n\n", "<h2>Monthly Contributor Breakdown</h2>\n")
+        f.write(table_html_clean)
 
         if explicitly_skipped:
-            f.write("## Explicitly Excluded Reports\n\n")
-            f.write("These files were skipped because they were marked with `Include = 0` in the report list:\n\n")
+            f.write("<h2>Explicitly Excluded Reports</h2>\n")
+            f.write("<p>These files were skipped because they were marked with <code>Include = 0</code> in the report list:</p>\n")
+            f.write("<ul>\n")
             for sf in explicitly_skipped:
-                f.write(f"- `{sf}`\n")
-            f.write("\n")
+                sf_path = html_path_map.get(sf, "")
+                sf_link = f"<a href='file:///{sf_path}' target='_blank'><code>{sf}</code></a>" if sf_path else f"<code>{sf}</code>"
+                f.write(f"<li>{sf_link}</li>\n")
+            f.write("</ul>\n")
 
         if overlapping_skipped:
-            f.write("## Overlapping Trades (Skipped)\n\n")
-            f.write("These files were marked for inclusion but skipped because all their trades overlapped with already accepted sequences:\n\n")
+            f.write("<h2>Overlapping Trades (Skipped)</h2>\n")
+            f.write("<p>These files were marked for inclusion but skipped because all their trades overlapped with already accepted sequences:</p>\n")
+            f.write("<ul>\n")
             for sf in overlapping_skipped:
-                f.write(f"- `{sf}`\n")
-            f.write("\n")
+                sf_path = html_path_map.get(sf, "")
+                sf_link = f"<a href='file:///{sf_path}' target='_blank'><code>{sf}</code></a>" if sf_path else f"<code>{sf}</code>"
+                f.write(f"<li>{sf_link}</li>\n")
+            f.write("</ul>\n")
 
         # 10. Detailed Per-Report Analysis
-        f.write("## Detailed Per-Report Analysis\n\n")
+        f.write("<h2>Detailed Per-Report Analysis</h2>\n")
         
         all_trades_files = glob.glob(os.path.join(trades_folder, "all_trades_*.csv"))
         
@@ -326,7 +382,6 @@ def main():
         def parse_set_file(html_file_path):
             """Reads .set file from parent directory above the report directory."""
             params = {
-                "LotSize": "N/A",
                 "MaxLots": "N/A",
                 "LotSizeExponent": "N/A",
                 "DelayTradeSequence": "N/A",
@@ -369,22 +424,13 @@ def main():
                 return params
 
         if not all_trades_files:
-            f.write("No detailed trade files found.\n")
+            f.write("<p>No detailed trade files found.</p>\n")
         else:
             # Sort files for consistent report order
             all_trades_files.sort()
             # Create sets for easy lookup
             included_files = set(df_deals['SourceFile'].unique()) if not df_deals.empty else set()
             
-            # Get original HTML paths from report_list.csv for parquet lookup
-            html_path_map = {}
-            if os.path.exists(report_list_path):
-                try:
-                    df_list_tmp = pd.read_csv(report_list_path)
-                    for _, row in df_list_tmp.iterrows():
-                        html_path_map[os.path.basename(row['FilePath'])] = row['FilePath']
-                except: pass
-
             # Iterate through all files specified in report_list.csv to ensure all are shown
             all_reports_to_show = []
             if os.path.exists(report_list_path):
@@ -415,17 +461,22 @@ def main():
                 max_dd_pct = None
                 df_parquet = None
                 set_params = None
+                initial_lot_size = "N/A"
                 
                 atf = os.path.join(trades_folder, f"all_trades_{report_basename}.csv")
                 
                 if not os.path.exists(atf):
-                    f.write(f"### {idx}. Report: {report_basename}\n\n")
-                    f.write(f"- **Status**: Skipped (File could not be parsed or has no trades)\n\n")
+                    f.write(f"<h3>{idx}. Report: {report_basename}</h3>\n")
+                    f.write(f"<p>- <strong>Status</strong>: <span class='status-skipped'>Skipped</span> (File could not be parsed or has no trades)</p>\n\n")
                     continue
 
                 df_at = pd.read_csv(atf)
                 
-                # Calculate DealPnL - exclude 'balance' type rows to get profit only
+                # EXTRACT INITIAL LOT SIZE
+                first_in_deal = df_at[df_at['Direction'].astype(str).str.lower() == 'in']
+                if not first_in_deal.empty:
+                    initial_lot_size = first_in_deal.iloc[0]['Volume']
+
                 df_at['Direction_lower'] = df_at['Direction'].astype(str).str.lower()
                 df_pnl_only = df_at[df_at['Direction_lower'].isin(['in', 'out', 'in/out'])]
                 
@@ -434,15 +485,19 @@ def main():
                 
                 # Determine Status
                 status = "Unknown"
+                status_class = ""
                 reason = ""
                 
                 if original_filename in included_files:
                     status = "Included"
+                    status_class = "status-included"
                 elif original_filename in explicitly_skipped:
                     status = "Skipped"
+                    status_class = "status-skipped"
                     reason = "Manual (Include=0)"
                 elif original_filename in overlapping_skipped:
                     status = "Skipped"
+                    status_class = "status-skipped"
                     reason = "Overlapping trades"
                 else:
                     # Check if it was filtered out by date range
@@ -450,9 +505,11 @@ def main():
                     df_at_filtered = df_at[(df_at['Time'] >= calc_start) & (df_at['Time'] < calc_end)]
                     if df_at_filtered.empty:
                         status = "Skipped"
+                        status_class = "status-skipped"
                         reason = "Date range"
                     else:
                         status = "Partially Included"
+                        status_class = "status-partial"
 
                 df_at['Time'] = pd.to_datetime(df_at['Time'])
                 
@@ -586,28 +643,49 @@ def main():
                     if max_dd_abs is not None:
                         print(f"  Max DD: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)")
                 
-                f.write(f"### {idx}. Report: {report_basename}\n\n")
-
-                f.write(f"- **Status**: {status} {'(' + reason + ')' if reason else ''}\n")
+                # Try to get absolute path for hyperlink
+                h_link = f"<a href='file:///{full_html_path}' target='_blank'>{report_basename}</a>" if full_html_path else report_basename
+                
+                f.write(f"<h3>{idx}. Report: {h_link}</h3>\n")
+                f.write(f"<ul>\n")
+                
+                # Status field should not be a hyperlink
+                f.write(f"<li><strong>Status</strong>: <span class='{status_class}'>{status}</span> {'(' + reason + ')' if reason else ''}</li>\n")
                 if total_pnl is not None:
-                    f.write(f"- **Total PnL**: {total_pnl:,.2f}\n")
+                    f.write(f"<li><strong>Total PnL</strong>: {total_pnl:,.2f}</li>\n")
                     if max_dd_abs is not None:
-                        f.write(f"- **Max Drawdown**: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)\n")
+                        f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)</li>\n")
                     if df_parquet is not None:
-                        f.write(f"- **Data Source**: Parquet (Balance & Equity)\n")
+                        f.write(f"<li><strong>Data Source</strong>: Parquet (Balance & Equity)</li>\n")
                     
+                    f.write("<li><strong>Parameters</strong>:\n")
+                    f.write("<ul class='params-list'>\n")
+                    f.write(f"<li>Initial LotSize: <code>{initial_lot_size}</code></li>\n")
                     if set_params:
-                        f.write("- **Parameters**:\n")
-                        f.write(f"  - Lot Size: `{set_params['LotSize']}`\n")
-                        f.write(f"  - Max Lots: `{set_params['MaxLots']}`\n")
-                        f.write(f"  - Lot Size Exponent: `{set_params['LotSizeExponent']}`\n")
-                        f.write(f"  - Delay Trade Sequence: `{set_params['DelayTradeSequence']}`\n")
-                        f.write(f"  - Live Delay: `{set_params['LiveDelay']}`\n")
+                        f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n")
+                        f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n")
+                        f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n")
+                        f.write(f"<li>Live Delay: <code>{set_params['LiveDelay']}</code></li>\n")
+                    f.write("</ul></li>\n")
+                    
+                    f.write("</ul>\n")
+                    f.write(f"<div class='chart-container'><img src='charts/Chart_{report_basename}.png' alt='{report_basename} Charts'></div>\n\n")
 
-                    f.write("\n")
-                    f.write(f"![{report_basename} Charts](charts/Chart_{report_basename}.png)\n\n")
+        f.write("\n</body>\n</html>")
 
-    print(f"Analysis complete. Report saved to: {report_path}")
+    print(f"\nAnalysis complete.")
+    print(f"Report saved to: {report_path}")
+    
+    # Try to provide a clickable link in the console (VS Code and some terminals support this)
+    clickable_link = f"file:///{report_path.replace(os.sep, '/')}"
+    print(f"Open Report: {clickable_link}")
+    
+    # Automatically open in default browser
+    try:
+        webbrowser.open(clickable_link)
+    except Exception as e:
+        print(f"Could not automatically open browser: {e}")
 
 if __name__ == "__main__":
     main()
+

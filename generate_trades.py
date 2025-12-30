@@ -176,7 +176,7 @@ def parse_sequences_and_deals(file_path):
 
 def main():
     parser = argparse.ArgumentParser(description='Extract Non-Overlapping Trades to CSV')
-    parser.add_argument('output_folder', type=str, help='Path to the output folder created in Step 1 (e.g., analysis/output_*).')
+    parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1.')
     parser.add_argument('--base', type=float, default=100000.0, help='Base capital for each symbol (default: 100,000)')
     args = parser.parse_args()
 
