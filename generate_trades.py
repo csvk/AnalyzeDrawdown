@@ -16,13 +16,13 @@ def parse_sequences_and_deals(file_path):
         tables = soup.find_all('table')
         
         if len(tables) < 2:
-            return []
+            return [], []
             
         deals_table = tables[1]
         dfs = pd.read_html(io.StringIO(str(deals_table)), header=0)
         
         if not dfs:
-            return []
+            return [], []
             
         df = dfs[0].copy()
         
@@ -172,7 +172,7 @@ def parse_sequences_and_deals(file_path):
 
     except Exception as e:
         print(f"Error parsing {os.path.basename(file_path)}: {e}")
-        return [], None
+        return [], []
 
 def main():
     parser = argparse.ArgumentParser(description='Extract Non-Overlapping Trades to CSV')
@@ -189,13 +189,15 @@ def main():
         return
 
     df_list = pd.read_csv(csv_path)
-    included_files = df_list[df_list['Include'] == 1]['FilePath'].tolist()
+    # Get all files to process regardless of inclusion
+    all_files_to_process = df_list['FilePath'].tolist()
+    included_files_set = set(df_list[df_list['Include'] == 1]['FilePath'].tolist())
 
-    if not included_files:
-        print("No files marked for inclusion.")
+    if not all_files_to_process:
+        print("No files found in report_list.csv.")
         return
 
-    print(f"Processing {len(included_files)} reports...")
+    print(f"Processing {len(all_files_to_process)} reports for detailed trade data...")
     
     all_sequences = []
     
@@ -206,21 +208,27 @@ def main():
         shutil.rmtree(trades_out_dir)
     os.makedirs(trades_out_dir, exist_ok=True)
 
-    for f in included_files:
+    for f in all_files_to_process:
         print(f"Processing {os.path.basename(f)}...")
         seqs, full_df = parse_sequences_and_deals(f)
-        all_sequences.extend(seqs)
         
-        # Save all trades from this file
-        if full_df is not None:
-            filename_no_ext = os.path.splitext(os.path.basename(f))[0]
-            all_trades_csv = os.path.join(trades_out_dir, f"all_trades_{filename_no_ext}.csv")
-            
-            # Save all trades from this file after dropping SourceFile
+        # Only add sequences to the portfolio pool if marked for inclusion
+        if f in included_files_set:
+            all_sequences.extend(seqs)
+        
+        # Save all trades from this file even if empty
+        filename_no_ext = os.path.splitext(os.path.basename(f))[0]
+        all_trades_csv = os.path.join(trades_out_dir, f"all_trades_{filename_no_ext}.csv")
+        
+        if full_df:
             df_full = pd.DataFrame(full_df)
             if 'SourceFile' in df_full.columns:
                 df_full.drop(columns=['SourceFile'], inplace=True)
             df_full.to_csv(all_trades_csv, index=False)
+        else:
+            # Create an empty CSV with headers for consistency
+            cols = ['Time', 'Deal', 'Symbol', 'Type', 'Direction', 'Volume', 'Price', 'Order', 'Commission', 'Swap', 'Profit', 'Balance', 'Comment', 'SequenceNumber', 'TradeNumberInSequence']
+            pd.DataFrame(columns=cols).to_csv(all_trades_csv, index=False)
             
     # Group by Symbol
     sequences_by_symbol = {}
