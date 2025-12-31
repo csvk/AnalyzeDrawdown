@@ -3,9 +3,9 @@
 This project provides a 3-step workflow to analyze trading reports. Each analysis run is contained within a dedicated timestamped folder for better organization.
 
 ## Project Structure
-- `generate_file_list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list.
-- `generate_trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
-- `analyze_portfolio.py`: Generates charts and a final markdown report inside the same output folder.
+- `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list.
+- `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
+- `analyze.py`: Generates charts and a final markdown report inside the same output folder.
 
 ## Expected Directory Structure
 ```text
@@ -33,21 +33,21 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ### Step 1: Initialize Analysis
 Scan your **parent folder** (the one containing your `HTML Reports` subfolder) to create a new output directory.
 ```bash
-python generate_file_list.py "C:/Path/To/ParentFolder"
+python list.py "C:/Path/To/ParentFolder"
 ```
 *   **Output**: A new folder `analysis/output_YYYYMMDD_HHMMSS/` is created at the parent level.
 
 ### Step 2: Extract Trades
 Process the reports and extract non-overlapping deal data.
 ```bash
-python generate_trades.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
+python trades.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
 *   **Output**: Creates a `Trades/` subfolder inside your output directory.
 
 ### Step 3: Portfolio Analysis
 Generate performance charts and the final analysis report.
 ```bash
-python analyze_portfolio.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
+python analyze.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ```
 *   **Output**: Saves `Full_Analysis.html` and a `charts/` folder inside the output directory.
 

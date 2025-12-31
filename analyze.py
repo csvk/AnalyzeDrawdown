@@ -12,7 +12,7 @@ import webbrowser
 
 def main():
     parser = argparse.ArgumentParser(description='Comprehensive Portfolio Analysis')
-    parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1.')
+    parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1 (list.py).')
     parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--base', type=float, default=100000.0, help='Base capital (default: 100,000)')
