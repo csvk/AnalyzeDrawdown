@@ -281,8 +281,8 @@ def main():
         .status-included { color: #27ae60; font-weight: bold; }
         .status-skipped { color: #e74c3c; font-weight: bold; }
         .status-partial { color: #f39c12; font-weight: bold; }
-        .params-list { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; }
-        .params-list li { border-left: none; border: 1px solid #ddd; padding: 5px 10px; background: #fdfdfd; font-size: 0.9em; box-shadow: none; margin-bottom: 0; }
+        .params-list { display: flex; flex-direction: column; gap: 5px; list-style: none; padding: 0; margin-top: 10px; }
+        .params-list li { border: 1px solid #ddd; border-left: 5px solid #3498db; padding: 8px 12px; background: #fff; font-size: 0.95em; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 0; width: fit-content; min-width: 250px; }
     </style>
     """
 
@@ -382,6 +382,7 @@ def main():
         def parse_set_file(html_file_path):
             """Reads .set file from parent directory above the report directory."""
             params = {
+                "LotSize": "N/A",
                 "MaxLots": "N/A",
                 "LotSizeExponent": "N/A",
                 "DelayTradeSequence": "N/A",
@@ -417,7 +418,7 @@ def main():
                             key, val = line.split('=', 1)
                             key = key.strip()
                             if key in params:
-                                params[key] = val.strip()
+                                params[key] = val.strip().split('||')[0]
                 return params
             except Exception as e:
                 print(f"Warning: Could not parse .set file for {html_file_path}: {e}")
@@ -653,6 +654,11 @@ def main():
                 f.write(f"<li><strong>Status</strong>: <span class='{status_class}'>{status}</span> {'(' + reason + ')' if reason else ''}</li>\n")
                 if total_pnl is not None:
                     f.write(f"<li><strong>Total PnL</strong>: {total_pnl:,.2f}</li>\n")
+                    # Calculate Selected PnL (contribution to portfolio)
+                    selected_pnl_val = 0.0
+                    if not df_deals.empty and original_filename in df_deals['SourceFile'].values:
+                        selected_pnl_val = df_deals[df_deals['SourceFile'] == original_filename]['DealPnL'].sum()
+                    f.write(f"<li><strong>Selected PnL</strong>: {selected_pnl_val:,.2f}</li>\n")
                     if max_dd_abs is not None:
                         f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)</li>\n")
                     if df_parquet is not None:
@@ -660,12 +666,13 @@ def main():
                     
                     f.write("<li><strong>Parameters</strong>:\n")
                     f.write("<ul class='params-list'>\n")
-                    f.write(f"<li>Initial LotSize: <code>{initial_lot_size}</code></li>\n")
                     if set_params:
+                        f.write(f"<li>Lot Size: <code>{set_params['LotSize']}</code></li>\n")
                         f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n")
                         f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n")
                         f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n")
                         f.write(f"<li>Live Delay: <code>{set_params['LiveDelay']}</code></li>\n")
+                    f.write(f"<li>Initial LotSize (Report): <code>{initial_lot_size}</code></li>\n")
                     f.write("</ul></li>\n")
                     
                     f.write("</ul>\n")

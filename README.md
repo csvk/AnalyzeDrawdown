@@ -10,6 +10,8 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ## Expected Directory Structure
 ```text
 [Parent Directory]/
+├── File1.set
+├── File2.set
 ├── HTML Reports/
 │   ├── File1.htm
 │   └── File2.htm
