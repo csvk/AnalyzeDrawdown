@@ -281,8 +281,8 @@ def main():
         .status-included { color: #27ae60; font-weight: bold; }
         .status-skipped { color: #e74c3c; font-weight: bold; }
         .status-partial { color: #f39c12; font-weight: bold; }
-        .params-list { display: flex; flex-direction: column; gap: 5px; list-style: none; padding: 0; margin-top: 10px; }
-        .params-list li { border: 1px solid #ddd; border-left: 5px solid #3498db; padding: 8px 12px; background: #fff; font-size: 0.95em; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 0; width: fit-content; min-width: 250px; }
+        .params-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; list-style: none; padding: 0; margin-top: 10px; }
+        .params-list li { border: 1px solid #ddd; border-left: 5px solid #3498db; padding: 8px 12px; background: #fff; font-size: 0.95em; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 0; min-width: unset; }
     </style>
     """
 
@@ -387,6 +387,7 @@ def main():
                 "lotsizeexponent": "LotSizeExponent",
                 "delaytradesequence": "DelayTradeSequence",
                 "livedelay": "LiveDelay",
+                "maxorders": "MaxOrders",
                 "stoploss": "StopLoss"
             }
             results = {v: "N/A" for v in target_params.values()}
@@ -469,6 +470,9 @@ def main():
                 df_parquet = None
                 set_params = None
                 initial_lot_size = "N/A"
+                max_grid_level = "N/A"
+                lot_validation_status = "N/A"
+                top_3_discrepancies = []
                 
                 atf = os.path.join(trades_folder, f"all_trades_{report_basename}.csv")
                 
@@ -527,12 +531,84 @@ def main():
                 sets_dir = os.path.join(output_dir, "sets")
                 set_params = parse_set_file(full_html_path, sets_dir) if full_html_path else None
                 
+                # Convert set_params to numeric for calculations
+                s_lot = 0.0
+                s_exp = 1.0
+                s_max_lot = 999.0
+                s_dts = 0
+                s_ld = 0
+                s_max_orders = 0
+                
+                if set_params:
+                    try: s_lot = float(set_params.get('LotSize', 0))
+                    except: pass
+                    try: s_exp = float(set_params.get('LotSizeExponent', 1))
+                    except: pass
+                    try: s_max_lot = float(set_params.get('MaxLots', 999))
+                    except: pass
+                    try: s_dts = int(set_params.get('DelayTradeSequence', 0))
+                    except: pass
+                    try: s_ld = int(set_params.get('LiveDelay', 0))
+                    except: pass
+                    try: s_max_orders = int(set_params.get('MaxOrders', 0))
+                    except: pass
+
                 # Balance calculation from HTML trades (for fallback or comparison)
                 df_at_sorted = df_at.sort_values('Time')
                 exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
                 
-                # Chart 2x2: Balance, Underwater, Histogram, and Hold Times
-                fig, ((ax_bal, ax_dd), (ax_hist, ax_hold)) = plt.subplots(2, 2, figsize=(16, 12))
+                # --- Volume and Grid Level Logic ---
+                if set_params and not df_at.empty:
+                    in_deals = df_at[df_at['Direction'].astype(str).str.lower() == 'in'].copy()
+                    if not in_deals.empty and 'SequenceNumber' in in_deals.columns:
+                        max_rel_level = 0
+                        seq_indices = [idx for idx in in_deals['SequenceNumber'].unique() if idx > 0]
+                        validation_errors = []
+                        all_discrepancies = []
+                        
+                        for s_num in seq_indices:
+                            s_group = in_deals[in_deals['SequenceNumber'] == s_num].sort_values('Time')
+                            num_physical = len(s_group)
+                            current_seq_max_rel = s_ld + num_physical
+                            if current_seq_max_rel > max_rel_level:
+                                max_rel_level = current_seq_max_rel
+                                
+                            for i, (idx_row, row_val) in enumerate(s_group.iterrows(), 1):
+                                expected_vol = 0.0
+                                if i == 1:
+                                    for n in range(1, s_ld + 2):
+                                        theo_v = s_lot * (s_exp ** (n-1))
+                                        expected_vol += min(theo_v, s_max_lot)
+                                else:
+                                    theo_v = s_lot * (s_exp ** (s_ld + i - 1))
+                                    expected_vol = min(theo_v, s_max_lot)
+                                
+                                actual_vol = float(row_val['Volume'])
+                                diff = abs(actual_vol - expected_vol)
+                                if diff >= 0.01: 
+                                    all_discrepancies.append({
+                                        'Time': row_val['Time'],
+                                        'Theo': expected_vol,
+                                        'Act': actual_vol,
+                                        'Diff': diff
+                                    })
+                                    validation_errors.append(f"Seq {s_num} Trade {i}")
+
+                        if max_rel_level > 0:
+                            max_grid_level = max_rel_level + s_dts
+                        
+                        top_3_discrepancies = sorted(all_discrepancies, key=lambda x: x['Diff'], reverse=True)[:3]
+                        lot_validation_status = "OK" if not validation_errors else f"Discrepancy ({len(validation_errors)} trades)"
+
+                # Balance calculation from HTML trades (for fallback or comparison)
+                df_at_sorted = df_at.sort_values('Time')
+                exits = df_at_sorted[df_at_sorted['Direction'].str.lower().isin(['out', 'in/out'])].copy()
+                
+                # Chart 2x3: Balance, Underwater, Histogram | Hold Times, Placeholder, Volumes
+                fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+                ax_bal, ax_dd, ax_hist = axes[0]
+                ax_hold, ax_empty, ax_vol = axes[1]
+                ax_empty.set_axis_off()
                 
                 max_dd_pct = 0.0
                 max_dd_abs = 0.0
@@ -602,7 +678,51 @@ def main():
                 ax_dd.grid(True, alpha=0.3)
                 plt.setp(ax_dd.get_xticklabels(), rotation=30, ha='right')
 
-                # Plot 3: Sequence Histogram (Dual Axis)
+                # Plot 3: Volume Analysis (Theoretical)
+                if s_lot > 0:
+                    try:
+                        # Draw theoretical volumes up to MaxOrders or current max Grid Level
+                        limit = max(s_max_orders, (int(max_grid_level) - s_dts) if isinstance(max_grid_level, int) else 0)
+                        if limit == 0: limit = 10 # Default if unknown
+                        
+                        vols = []
+                        cum_vols = []
+                        levs = []
+                        curr_cum = 0
+                        for n in range(1, limit + 1):
+                            v = min(s_lot * (s_exp ** (n-1)), s_max_lot)
+                            vols.append(v)
+                            curr_cum += v
+                            cum_vols.append(curr_cum)
+                            levs.append(s_dts + n)
+                        
+                        color_vol = 'tab:blue'
+                        ax_vol.bar(levs, vols, color=color_vol, alpha=0.6, label='Lot Size')
+                        ax_vol.set_xlabel('Grid Level')
+                        ax_vol.set_ylabel('Lot Size', color=color_vol)
+                        ax_vol.tick_params(axis='y', labelcolor=color_vol)
+                        
+                        ax_cum = ax_vol.twinx()
+                        color_cum = 'tab:red'
+                        ax_cum.plot(levs, cum_vols, color=color_cum, marker='o', markersize=4, label='Cumulative')
+                        ax_cum.set_ylabel('Cumulative Lots', color=color_cum)
+                        ax_cum.tick_params(axis='y', labelcolor=color_cum)
+                        
+                        ax_vol.set_title("Theoretical Volume Analysis", fontsize=12)
+                        ax_vol.grid(True, alpha=0.3)
+                        ax_vol.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+                        
+                        # Annotate Max Values
+                        max_l = max(vols)
+                        max_c = cum_vols[-1]
+                        stats_box = f"Max Lot: {max_l:.2f}\nMax Cum: {max_c:.2f}"
+                        ax_vol.text(0.05, 0.95, stats_box, transform=ax_vol.transAxes, fontsize=10, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    except:
+                        ax_vol.set_title("Volume Analysis Error", fontsize=12)
+                else:
+                    ax_vol.set_title("No Volume Parameters", fontsize=12)
+
+                # Plot 4: Sequence Histogram (Dual Axis)
                 if 'SequenceNumber' in df_at.columns and 'TradeNumberInSequence' in df_at.columns:
                     seq_groups = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
                     seq_data = []
@@ -715,17 +835,35 @@ def main():
                     if df_parquet is not None:
                         f.write(f"<li><strong>Data Source</strong>: Parquet (Balance & Equity)</li>\n")
                     
-                    f.write("<li><strong>Parameters</strong>:\n")
+                    f.write("<li><strong>Parameters & Validation</strong>:\n")
                     f.write("<ul class='params-list'>\n")
                     if set_params:
                         f.write(f"<li>Lot Size: <code>{set_params['LotSize']}</code></li>\n")
                         f.write(f"<li>Stop Loss: <code>{set_params['StopLoss']}</code></li>\n")
                         f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n")
                         f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n")
+                        f.write(f"<li>Max Orders: <code>{set_params['MaxOrders']}</code></li>\n")
                         f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n")
                         f.write(f"<li>Live Delay: <code>{set_params['LiveDelay']}</code></li>\n")
+                    
                     f.write(f"<li>Initial LotSize (Report): <code>{initial_lot_size}</code></li>\n")
+                    f.write(f"<li>Max Grid Level Reached: <code>{max_grid_level}</code></li>\n")
+                    
+                    val_color = "black"
+                    if lot_validation_status == "OK": val_color = "green"
+                    elif "Discrepancy" in str(lot_validation_status): val_color = "red"
+                    
+                    f.write(f"<li>Lot Validation: <b style='color:{val_color};'>{lot_validation_status}</b></li>\n")
                     f.write("</ul></li>\n")
+                    
+                    if top_3_discrepancies:
+                        f.write("<li><strong>Top 3 Lot Discrepancies</strong>:\n")
+                        f.write("<table style='width: auto; margin: 10px 0;'>\n")
+                        f.write("<thead><tr><th>Entry Time</th><th>Theo Lot</th><th>Actual Lot</th><th>Diff</th></tr></thead>\n")
+                        f.write("<tbody>\n")
+                        for d in top_3_discrepancies:
+                            f.write(f"<tr><td>{d['Time']}</td><td>{d['Theo']:.2f}</td><td>{d['Act']:.2f}</td><td>{d['Diff']:.2f}</td></tr>\n")
+                        f.write("</tbody></table></li>\n")
                     
                     f.write("</ul>\n")
                     f.write(f"<div class='chart-container'><img src='charts/Chart_{report_basename}.png' alt='{report_basename} Charts'></div>\n\n")
