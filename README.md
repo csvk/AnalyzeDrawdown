@@ -6,6 +6,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 - `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
+- `dd.py`: (Utility) Theoretical Drawdown Calculator for analyzing specific reports/days with sensitivity overrides and comparison against mean pip gaps.
 - `export.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
 - `sets2csv.py`: (Utility) Converts a folder of `.set` or `.chr` files into a single `all_sets_<ext>_<timestamp>.csv` with all parameters.
 
@@ -20,6 +21,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ├── analysis/
 │   └── output_20231223_120000/        <-- Created in Step 1
 │       ├── report_list.csv
+│       ├── prices/                    <-- Created in Step 1 (FX Data)
 │       ├── Portfolio_Overview.png     <-- Created in Step 3
 │       ├── Full_Analysis.html         <-- Created in Step 3
 │       ├── charts/                    <-- Created in Step 3
@@ -43,11 +45,15 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ## Step-by-Step Instructions
 
 ### Step 1: Initialize Analysis
-Scan your **parent folder** (the one containing your `HTML Reports` subfolder) to create a new output directory.
+Scan your **parent folder** (the one containing your `HTML Reports` subfolder) to create a new output directory. This step also automatically downloads historical daily FX closing prices for required symbols.
 ```bash
 python list.py "C:/Path/To/ParentFolder"
 ```
-*   **Output**: A new folder `analysis/output_YYYYMMDD_HHMMSS/` is created at the parent level.
+*   **Output**: 
+    *   A new folder `analysis/output_YYYYMMDD_HHMMSS/` is created.
+    *   `report_list.csv`: List of reports to process.
+    *   `sets/`: Copy of `.set` files from the parent folder.
+    *   `prices/`: Historical FX data (`.csv`) downloaded via `yfinance`.
 
 ### Step 2: Extract Trades
 Process the reports and extract non-overlapping deal data.
@@ -80,3 +86,13 @@ python sets2csv.py "C:/Path/To/Your/Sets"
 *   **Auto-Detection**: The script automatically detects the file type in the folder.
 *   **Constraint**: The folder must contain only one type of file (`.set` OR `.chr`).
 *   **Output**: Generates `all_sets_set_YYYYMMDD_HHMMSS.csv` or `all_sets_chr_YYYYMMDD_HHMMSS.csv` within the same directory.
+
+### Theoretical Drawdown Calculator (`dd.py`)
+Provides a detailed console-based sensitivity analysis for individual reports.
+```bash
+python dd.py --dir "C:/Path/To/output_folder" --file "ReportName" [--date YYYY-MM-DD] [--lot 0.01] [--pipgap 20]
+```
+*   **Automatic Detection**: If `--date` is omitted, the script automatically identifies the **Max Gap Day** (worst-case volatility day) from the trade history.
+*   **Dual Scenario Analysis**: Calculates and displays values for both the "Default/Passed" pip gap and the "Global Mean" pip gap side-by-side.
+*   **Sensitivity Overrides**: Use `--lot` and `--pipgap` to test "what-if" scenarios with custom parameters.
+*   **Visual Alerts**: Automatically highlights drawdown values exceeding $1,000 in bold red for quick risk assessment.

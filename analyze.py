@@ -101,8 +101,14 @@ def main():
         # 6. Drawdown Calculation (Underwater)
         portfolio['PeakBalance'] = portfolio['Balance'].expanding().max()
         portfolio['Drawdown'] = (portfolio['Balance'] / portfolio['PeakBalance']) - 1
-        # Note: Using Balance for drawdown as is typical.
         portfolio['Drawdown%'] = portfolio['Drawdown'] * 100
+        
+        # Capture Portfolio Max DD and its timestamp
+        portfolio_max_dd_pct = portfolio['Drawdown%'].min()
+        portfolio_max_dd_time = portfolio['Drawdown%'].idxmin()
+        portfolio_max_dd_abs = (portfolio['Balance'] - portfolio['PeakBalance']).min()
+        portfolio_max_dd_abs_time = (portfolio['Balance'] - portfolio['PeakBalance']).idxmin()
+
 
     # 7. Charting
     overview_chart_path = os.path.join(charts_folder, "Portfolio_Overview.png")
@@ -306,7 +312,12 @@ def main():
         final_balance = portfolio['Balance'].iloc[-1] if not portfolio.empty and 'Balance' in portfolio.columns else args.base
         f.write(f"<p><strong>Final Balance:</strong> {final_balance:,.2f}</p>\n")
         f.write(f"<p><strong>Total Profit:</strong> {(final_balance - args.base):,.2f}</p>\n")
+        
+        if not portfolio.empty:
+            f.write(f"<p><strong>Max Drawdown:</strong> {portfolio_max_dd_abs:,.2f} ({portfolio_max_dd_pct:.2f}%) [{portfolio_max_dd_time}]</p>\n")
+        
         f.write("</div>\n")
+
         
         f.write("<h2>Performance Charts</h2>\n")
         overview_path = "charts/Portfolio_Overview.png"
@@ -528,6 +539,7 @@ def main():
                     df = fx_rates[sym_key]
                     try:
                         # Use get_indexer to find nearest date (method='pad' for forward fill)
+                        idx = df.index.get_indexer([target_d], method='pad')[0]
                         if idx != -1:
                             row_val = df.iloc[idx]
                             # Handle different column names (list.py saves as 'Price', yahoo might return 'Close', 'Adj Close')
@@ -596,6 +608,8 @@ def main():
                 total_pnl = None
                 max_dd_abs = None
                 max_dd_pct = None
+                max_dd_time = None
+
                 df_parquet = None
                 set_params = None
                 initial_lot_size = "N/A"
@@ -663,8 +677,38 @@ def main():
                 # Extract Report Metrics
                 report_metrics = extract_report_metrics(full_html_path) if full_html_path else {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
                 
+                # 0. Point Detection and Global Pip Gap Collection (for chart and theoretical scenarios)
+                detected_point = None
+                pip_gaps = []
+                if not df_at.empty:
+                    # Robust symbol detection: find the first non-empty, non-null symbol
+                    s_sym_top = ""
+                    if 'Symbol' in df_at.columns:
+                        valid_symbols = df_at['Symbol'].dropna()
+                        valid_symbols = valid_symbols[valid_symbols.astype(str).str.strip() != ""]
+                        if not valid_symbols.empty:
+                            s_sym_top = str(valid_symbols.iloc[0]).upper()
+                    
+                    detected_point = 0.01 if "JPY" in s_sym_top else 0.0001
+                    
+                    if 'SequenceNumber' in df_at.columns:
+                        seq_groups_tmp = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
+                        for _, group in seq_groups_tmp:
+                            in_trades = group[group['Direction'].astype(str).str.lower() == 'in'].sort_values('Time')
+                            if len(in_trades) > 1:
+                                prices_tmp = in_trades['Price'].values
+                                for i in range(len(prices_tmp) - 1):
+                                    gap_tmp = abs(prices_tmp[i+1] - prices_tmp[i]) / detected_point
+                                    pip_gaps.append(gap_tmp)
+                
+                global_avg_gap = np.mean(pip_gaps) if pip_gaps else 0
+
                 # --- Theoretical DD Calculation Logic ---
                 theoretical_dd_series = [] # List of {Time, DD1, DD5, DD10, DD15, DD20}
+                mean_gap_scenario = None # New scenario holder
+                max_gap_day = None
+                max_gap_fx_factor = 1.0
+
                 if set_params and not df_at.empty:
                     try:
                         s_pipstep = float(set_params.get('PipStep', 0))
@@ -674,8 +718,6 @@ def main():
                         s_lotexp = float(set_params.get('LotSizeExponent', 1))
                         s_maxlots = float(set_params.get('MaxLots', 999))
                         s_ld = int(set_params.get('LiveDelay', 0))
-                        
-                        detected_point = None
 
                         if s_pipstep != 0 and s_lot > 0:
                             # Use Copy to avoid warnings
@@ -699,27 +741,32 @@ def main():
                                     longest_seq = day_deals.sort_values('Time')
                                 
                                 p1_actual = longest_seq.iloc[0]['Price']
-                                # Heuristic for Point (Pip Size)
-                                # JPY pairs: 0.01 (whether 2 or 3 decimals)
-                                # Others: 0.0001 (whether 4 or 5 decimals)
-                                s_sym = str(longest_seq.iloc[0]['Symbol']).upper() if 'Symbol' in longest_seq.columns else ""
-                                if "JPY" in s_sym:
-                                    point = 0.01
-                                else:
-                                    # Default to 0.0001 for non-JPY majors/crosses
-                                    point = 0.0001
-                                
-                                if detected_point is None:
-                                    detected_point = point
+                                point = detected_point
 
                                 if s_pipstep < 0:
-                                    physical_ins = longest_seq[longest_seq['Direction'].astype(str).str.lower() == 'in']
-                                    if len(physical_ins) >= 2:
-                                        p1 = physical_ins.iloc[0]['Price']
-                                        p2 = physical_ins.iloc[1]['Price']
-                                        gap_pips = abs(p1 - p2) / point
-                                        # Logic fix: Use raw gap observed, normalize for LiveDelay
-                                        current_pipstep = gap_pips / (s_pipstepexp ** s_ld)
+                                    # Calculate mean pip gap across all sequences on this day
+                                    all_day_gaps = []
+                                    if 'SequenceNumber' in ins.columns:
+                                        for _, s_group in ins.groupby('SequenceNumber'):
+                                            s_group = s_group.sort_values('Time')
+                                            if len(s_group) >= 2:
+                                                prices = s_group['Price'].values
+                                                for i in range(len(prices) - 1):
+                                                    gap = abs(prices[i+1] - prices[i]) / point
+                                                    all_day_gaps.append(gap)
+                                    else:
+                                        # Fallback if no SequenceNumber
+                                        s_group = ins.sort_values('Time')
+                                        if len(s_group) >= 2:
+                                            prices = s_group['Price'].values
+                                            for i in range(len(prices) - 1):
+                                                gap = abs(prices[i+1] - prices[i]) / point
+                                                all_day_gaps.append(gap)
+
+                                    if all_day_gaps:
+                                        mean_gap = sum(all_day_gaps) / len(all_day_gaps)
+                                        # Logic fix: Use mean gap observed, normalize for LiveDelay
+                                        current_pipstep = mean_gap / (s_pipstepexp ** s_ld)
                                         last_calculated_pipstep = current_pipstep
                                     elif last_calculated_pipstep is not None:
                                         current_pipstep = last_calculated_pipstep
@@ -757,7 +804,9 @@ def main():
                                         vr[i] = get_theo_lot(s_ld + i)
                                         
                                     dds = {}
+                                    gaps = {}
                                     # New Definition: DD(N) is cumulative drawdown of active trades (1..N) at Level N+1
+                                    p_anchor = prices[min(s_ld + 1, 21)]
                                     for i in range(1, 21):
                                         target_price = prices[min(s_ld + i + 1, 22)]
                                         total_dd_at_next_level = 0
@@ -765,48 +814,86 @@ def main():
                                             idx_p = min(s_ld + j, 22)
                                             total_dd_at_next_level += vr[j] * abs(target_price - prices[idx_p])
                                         
-                                        if i in [1, 5, 10, 13, 17, 20]:
-                                            dds[i] = total_dd_at_next_level
-                                    
-                                    # Calculate Gaps for summary table (distance from 1st ACTUAL trade)
-                                    # Trade 1 is level (s_ld + 1)
-                                    # PipGap 1 is distance to Level (s_ld + 2)
-                                    # PipGap 5 is distance to Level (s_ld + 6)
-                                    p_anchor = prices[min(s_ld + 1, 21)]
-                                    gap1 = abs(p_anchor - prices[min(s_ld + 2, 21)]) / point
-                                    gap5 = abs(p_anchor - prices[min(s_ld + 6, 21)]) / point
-                                    gap10 = abs(p_anchor - prices[min(s_ld + 11, 21)]) / point
-                                    gap13 = abs(p_anchor - prices[min(s_ld + 14, 21)]) / point
-                                    gap17 = abs(p_anchor - prices[min(s_ld + 18, 21)]) / point
-                                    gap20 = abs(p_anchor - prices[min(s_ld + 21, 21)]) / point
+                                        dds[i] = total_dd_at_next_level
+                                        gaps[i] = abs(p_anchor - prices[min(s_ld + i + 1, 21)]) / point
+
                                     
                                     # Identify symbol and apply USD conversion
+
                                     rep_symbol = str(longest_seq.iloc[0]['Symbol']).upper() if 'Symbol' in longest_seq.columns else ""
                                     fx_factor = get_usd_conv_factor(rep_symbol, d_date, all_fx_rates)
                                     
                                     multiplier = 100000 
-                                    theoretical_dd_series.append({
+                                    theo_entry = {
                                         'Time': pd.to_datetime(longest_seq.iloc[0]['Time']),
-                                        'DD1': dds[1] * multiplier * fx_factor,
-                                        'DD5': dds[5] * multiplier * fx_factor,
-                                        'DD10': dds[10] * multiplier * fx_factor,
-                                        'DD13': dds[13] * multiplier * fx_factor,
-                                        'DD17': dds[17] * multiplier * fx_factor,
-                                        'DD20': dds[20] * multiplier * fx_factor,
                                         'PipStepUsed': current_pipstep,
-                                        'Gap1': gap1,
-                                        'Gap5': gap5,
-                                        'Gap10': gap10,
-                                        'Gap13': gap13,
-                                        'Gap17': gap17,
-                                        'Gap20': gap20,
-                                        'Lot1': vr[1],
-                                        'Lot5': vr[5],
-                                        'Lot10': vr[10],
-                                        'Lot13': vr[13],
-                                        'Lot17': vr[17],
-                                        'Lot20': vr[20]
-                                    })
+                                        'FX_Factor': fx_factor,
+                                        'p1_actual': p1_actual, # Store for Mean Gap Scenario
+                                        'is_buy': is_buy # Store for Mean Gap Scenario
+                                    }
+                                    # Store all 20 levels
+                                    for i in range(1, 21):
+                                        theo_entry[f'DD{i}'] = dds[i] * multiplier * fx_factor
+                                        theo_entry[f'Gap{i}'] = gaps[i]
+                                        theo_entry[f'Lot{i}'] = vr[i]
+                                    
+                                    theoretical_dd_series.append(theo_entry)
+
+                        # 2. Add "Mean Pip Gap on Max Gap Day" Scenario
+                        if theoretical_dd_series and global_avg_gap > 0:
+                            df_theo_tmp = pd.DataFrame(theoretical_dd_series)
+                            max_idx = df_theo_tmp['PipStepUsed'].idxmax()
+                            max_entry = theoretical_dd_series[max_idx]
+                            
+                            max_gap_day = max_entry['Time']
+                            max_gap_fx_factor = max_entry['FX_Factor']
+                            
+                            # Calculate target_pipstep for this scenario: (Global Mean Gap) normalized for LiveDelay
+                            target_pipstep = global_avg_gap / (s_pipstepexp ** s_ld)
+                            
+                            if target_pipstep > 0:
+                                p1_scen = max_entry['p1_actual']
+                                is_buy_scen = max_entry['is_buy']
+                                direction_sign = -1 if is_buy_scen else 1
+                                
+                                scen_prices = [0.0] * 23
+                                scen_prices[min(s_ld + 1, 22)] = p1_scen
+                                for k in range(s_ld, 0, -1):
+                                    gap_val = min(s_maxpipstep, target_pipstep * (s_pipstepexp ** (k-1))) if s_maxpipstep > 0 else target_pipstep * (s_pipstepexp ** (k-1))
+                                    scen_prices[k] = scen_prices[k+1] - direction_sign * (gap_val * detected_point)
+                                for k in range(s_ld + 1, 22):
+                                    gap_val = min(s_maxpipstep, target_pipstep * (s_pipstepexp ** (k-1))) if s_maxpipstep > 0 else target_pipstep * (s_pipstepexp ** (k-1))
+                                    scen_prices[k+1] = scen_prices[k] + direction_sign * (gap_val * detected_point)
+                                
+                                def get_theo_lot_scen(k):
+                                    return min(s_maxlots, s_lot * (s_lotexp ** (k-1)))
+                                
+                                vr_scen = [0.0] * 22
+                                vr_scen[1] = sum(get_theo_lot_scen(j) for j in range(1, s_ld + 2))
+                                for i in range(2, 21):
+                                    vr_scen[i] = get_theo_lot_scen(s_ld + i)
+                                    
+                                dds_scen = {}
+                                gaps_scen = {}
+                                p_anchor_scen = scen_prices[min(s_ld + 1, 21)]
+                                for i in range(1, 21):
+                                    target_p = scen_prices[min(s_ld + i + 1, 22)]
+                                    total_dd_scen = 0
+                                    for j in range(1, i + 1):
+                                        idx_p = min(s_ld + j, 22)
+                                        total_dd_scen += vr_scen[j] * abs(target_p - scen_prices[idx_p])
+                                    dds_scen[i] = total_dd_scen
+                                    gaps_scen[i] = abs(p_anchor_scen - scen_prices[min(s_ld + i + 1, 21)]) / detected_point
+                                
+                                mean_gap_scenario = {
+                                    'PipStepUsed': target_pipstep,
+                                    'FX_Factor': max_gap_fx_factor
+                                }
+                                for i in range(1, 21):
+                                    mean_gap_scenario[f'DD{i}'] = dds_scen[i] * 100000 * max_gap_fx_factor
+                                    mean_gap_scenario[f'Gap{i}'] = gaps_scen[i]
+                                    mean_gap_scenario[f'Lot{i}'] = vr_scen[i]
+
                     except Exception as e:
                         print(f"  Warning: Error in Theoretical DD calc for {report_basename}: {e}")
                 
@@ -960,6 +1047,8 @@ def main():
 
                         max_dd_pct = df_pq_filtered['DD_Pct'].min()
                         max_dd_abs = abs_diff.min()
+                        max_dd_time = df_pq_filtered.iloc[df_pq_filtered['DD_Pct'].argmin()]['DATE']
+
                     else:
                         df_parquet = None # Revert to fallback if date range filters out everything
                 
@@ -986,6 +1075,8 @@ def main():
 
                     max_dd_pct = exits['DD_Pct'].min()
                     max_dd_abs = abs_diff.min()
+                    max_dd_time = exits.iloc[exits['DD_Pct'].argmin()]['Time']
+
 
                 ax_bal.set_ylabel('Amount')
                 ax_bal.grid(True, alpha=0.3)
@@ -1045,16 +1136,7 @@ def main():
                     seq_groups = df_at[df_at['SequenceNumber'] > 0].groupby('SequenceNumber')
                     seq_data = []
                     hold_times = []
-                    pip_gaps = []
-                    
-                    # Ensure we have a point for calculation
-                    # (Usually detected earlier in theoretical DD calc part)
-                    if 'detected_point' not in locals() or detected_point is None:
-                        # Fallback heuristic
-                        s_sym = str(df_at.iloc[0]['Symbol']).upper() if 'Symbol' in df_at.columns else ""
-                        curr_point = 0.01 if "JPY" in s_sym else 0.0001
-                    else:
-                        curr_point = detected_point
+                    # pip_gaps already collected earlier
 
                     for _, group in seq_groups:
                         group_sorted = group.sort_values('Time')
@@ -1062,14 +1144,6 @@ def main():
                         pnl = group_sorted[group_sorted['Direction'].astype(str).str.lower().isin(['out', 'in/out'])]['DealPnL'].sum()
                         seq_data.append({'Length': length, 'PnL': pnl})
                         
-                        # Pip Gaps: Only for consecutive 'in' trades in the same sequence
-                        in_trades = group_sorted[group_sorted['Direction'].astype(str).str.lower() == 'in']
-                        if len(in_trades) > 1:
-                            prices = in_trades['Price'].values
-                            for i in range(len(prices) - 1):
-                                gap = abs(prices[i+1] - prices[i]) / curr_point
-                                pip_gaps.append(gap)
-
                         # Hold time calculation: First in to first out
                         first_in = group[(group['TradeNumberInSequence'] == 1) & (group['Direction'].astype(str).str.lower() == 'in')]
                         first_out = group[group['Direction'].astype(str).str.lower().isin(['out', 'in/out'])].sort_values('Time')
@@ -1338,7 +1412,8 @@ def main():
 
                     # 7. Max Drawdown
                     if max_dd_abs is not None:
-                        f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%)</li>\n")
+                        f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%) [{max_dd_time}]</li>\n")
+
                 
                 f.write("</ul>\n")
                 
@@ -1380,25 +1455,60 @@ def main():
                         f.write("</tbody></table></li>\n")
                     
                     if theoretical_dd_series:
-                        f.write("<li><strong>Theoretical Max DD Summary in USD (Top 5 Days by DD20)</strong>:\n")
-                        f.write("<table style='width: auto; margin: 10px 0;'>\n")
-                        f.write("<thead><tr><th>Date</th><th>Lot1 / Gap 1</th><th>Lot5 / Gap 5</th><th>Lot10 / Gap 10</th><th>Lot13 / Gap 13</th><th>Lot17 / Gap 17</th><th>Lot20 / Gap 20</th><th>DD (1)</th><th>DD (5)</th><th>DD (10)</th><th>DD (13)</th><th>DD (17)</th><th>DD (20)</th></tr></thead>\n")
-                        f.write("<tbody>\n")
-                        # Show top 5 days or all? Let's show top 5 for brevity but mention it's top 5.
-                        # Or maybe just the absolute max DDs ever seen for each.
-                        sorted_theo = sorted(theoretical_dd_series, key=lambda x: x['DD20'], reverse=True)[:5]
-                        for d in sorted_theo:
-                            # Use .get() for safety and format correctly
-                            f.write(f"<tr><td>{d['Time'].date()}</td>")
-                            # Combined Lot / PipGap values
-                            f.write(f"<td>{d.get('Lot1', 0):.2f} / {d.get('Gap1', 0):,.2f}</td>")
-                            f.write(f"<td>{d.get('Lot5', 0):.2f} / {d.get('Gap5', 0):,.0f}</td>")
-                            f.write(f"<td>{d.get('Lot10', 0):.2f} / {d.get('Gap10', 0):,.0f}</td>")
-                            f.write(f"<td>{d.get('Lot13', 0):.2f} / {d.get('Gap13', 0):,.0f}</td>")
-                            f.write(f"<td>{d.get('Lot17', 0):.2f} / {d.get('Gap17', 0):,.0f}</td>")
-                            f.write(f"<td>{d.get('Lot20', 0):.2f} / {d.get('Gap20', 0):,.0f}</td>")
-                            f.write(f"<td>{d['DD1']:,.2f}</td><td>{d['DD5']:,.2f}</td><td>{d['DD10']:,.2f}</td><td>{d['DD13']:,.2f}</td><td>{d['DD17']:,.2f}</td><td>{d['DD20']:,.2f}</td></tr>\n")
-                        f.write("</tbody></table></li>\n")
+                        # Select top 2 highest distinct PipStepUsed
+
+                        # Group by PipStepUsed and take the one with max DD20 for each
+                        df_theo_all = pd.DataFrame(theoretical_dd_series)
+                        if not df_theo_all.empty:
+                            # Round PipStepUsed to avoid tiny differences if any
+                            df_theo_all['PipStepUsed'] = df_theo_all['PipStepUsed'].round(2)
+                            top_distinct = df_theo_all.sort_values('DD20', ascending=False).groupby('PipStepUsed').head(1).sort_values('PipStepUsed', ascending=False).head(2)
+                            
+                            f.write("<li><strong>Theoretical Max DD Summary in USD (Top 2 Distinct Pip Gaps)</strong>:\n")
+                            f.write("<div style='overflow-x: auto;'>\n")
+                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n")
+                            f.write("<thead>\n")
+                            f.write("<tr><th style='padding: 2px;'>Scenario</th>")
+                            for b in range(1, 21):
+                                f.write(f"<th style='padding: 2px;'>L{b}</th>")
+                            f.write("</tr>\n</thead>\n<tbody>\n")
+                            
+                            # Prepare scenario rows
+                            scenario_rows = []
+                            for _, d_row in top_distinct.iterrows():
+                                scenario_rows.append({
+                                    'Label': f"Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
+                                    'Data': d_row
+                                })
+                            
+                            if 'mean_gap_scenario' in locals() and mean_gap_scenario:
+                                scenario_rows.append({
+                                    'Label': f"Scenario: Mean Pip Gap on Max Gap Day ({max_gap_day.date() if max_gap_day else 'N/A'}) | Base Pip Gap: {global_avg_gap:.2f} | USD Conv Factor: {max_gap_fx_factor:.4f}",
+                                    'Data': mean_gap_scenario
+                                })
+
+                            for s_row in scenario_rows:
+                                d_row = s_row['Data']
+                                # Header row for the scenario
+                                f.write(f"<tr style='background-color: #f2f2f2;'><td colspan='21' style='padding: 4px;'><b>{s_row['Label']}</b></td></tr>\n")
+                                
+                                # Row for Lot / Gap
+                                f.write("<tr><td style='padding: 2px;'><b>Lot / Gap</b></td>")
+                                for b in range(1, 21):
+                                    f.write(f"<td style='padding: 2px;'>{d_row.get(f'Lot{b}', 0):.2f} / {d_row.get(f'Gap{b}', 0):,.0f}</td>")
+                                f.write("</tr>\n")
+                                
+                                # Row for DD
+                                f.write("<tr><td style='padding: 2px;'><b>DD (USD)</b></td>")
+                                for b in range(1, 21):
+                                    dd_val = d_row.get(f'DD{b}', 0)
+                                    style = "padding: 2px; color: red; font-weight: bold;" if dd_val >= 1000 else "padding: 2px;"
+                                    f.write(f"<td style='{style}'>{dd_val:,.0f}</td>")
+                                f.write("</tr>\n")
+
+                            
+                            f.write("</tbody></table></div></li>\n")
+
                     
                     f.write("</ul>\n")
                     f.write(f"<div class='chart-container'><img src='charts/Chart_{report_basename}.png' alt='{report_basename} Charts'></div>\n\n")
