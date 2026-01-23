@@ -25,6 +25,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       ├── report_list.csv
 │       ├── prices/                    <-- Created in Step 1 (FX Data)
 │       ├── Full_Analysis.html         <-- Created in Step 3
+│       ├── Short_Analysis.html        <-- Created in Step 3
 │       ├── sim.html                   <-- Created in Step 5
 │       ├── charts/                    <-- Created in Step 3
 │       ├── sets/                      <-- Created in Step 1 (Copy of *.set)

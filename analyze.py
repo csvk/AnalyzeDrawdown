@@ -11,6 +11,14 @@ import math
 import webbrowser
 from bs4 import BeautifulSoup
 
+class MultiWriter:
+    def __init__(self, f_full, f_short):
+        self.f_full = f_full
+        self.f_short = f_short
+    def write(self, data, full=True, short=True):
+        if full: self.f_full.write(data)
+        if short: self.f_short.write(data)
+
 def main():
     parser = argparse.ArgumentParser(description='Comprehensive Portfolio Analysis')
     parser.add_argument('output_folder', type=str, help='Path to the output folder (e.g., [Parent]/analysis/output_*) created in Step 1 (list.py).')
@@ -269,6 +277,7 @@ def main():
             pass
 
     report_path = os.path.join(output_dir, "Full_Analysis.html")
+    short_report_path = os.path.join(output_dir, "Short_Analysis.html")
     
     css_style = """
     <style>
@@ -295,7 +304,8 @@ def main():
     </style>
     """
 
-    with open(report_path, 'w', encoding='utf-8') as f:
+    with open(report_path, 'w', encoding='utf-8') as f_full, open(short_report_path, 'w', encoding='utf-8') as f_short:
+        f = MultiWriter(f_full, f_short)
         f.write("<!DOCTYPE html>\n<html lang='en'>\n<head>\n")
         f.write("    <meta charset='UTF-8'>\n")
         f.write("    <meta name='viewport' content='width=device-width, initial-scale=1.0'>\n")
@@ -1528,24 +1538,46 @@ def main():
                             # Keep it sorted by PipStepUsed descending
                             combined_distinct = combined_distinct.sort_values('PipStepUsed', ascending=False)
 
-                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n")
+                            # Titles for both
+                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n", short=False)
+                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (1k Threshold Only)</strong>:\n", full=False)
+
                             f.write("<div style='overflow-x: auto;'>\n")
-                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n")
-                            # Headers will be generated per scenario below
                             
+                            # Full Report Table Start
+                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n", short=False)
+                            
+                            # Short Report Table Start
+                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 12px; border-collapse: collapse; border: 1px solid #ddd;'>\n", full=False)
+                            f.write("<thead><tr style='background-color: #f2f2f2;'>", full=False)
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Type</th>", full=False)
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Date</th>", full=False)
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Base Pip Gap</th>", full=False)
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>USD Conv Factor</th>", full=False)
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Trade</th>", full=False)
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Pip Gap</th>", full=False)
+                            f.write("</tr></thead>\n<tbody>\n", full=False)
+
                             # Prepare scenario rows
                             scenario_rows = []
                             for _, d_row in combined_distinct.iterrows():
-                                # Check if it's in the top 2 or bottom 2 to label correctly
                                 is_max = d_row['PipStepUsed'] in top_distinct['PipStepUsed'].values
                                 prefix = "Max Distinct Gap" if is_max else "Min Distinct Gap"
                                 scenario_rows.append({
+                                    'Type': prefix,
+                                    'Date': d_row['Time'].date(),
+                                    'BasePipGap': f"{d_row['PipStepUsed']:.2f}",
+                                    'FXFactor': f"{d_row['FX_Factor']:.4f}",
                                     'Label': f"{prefix} | Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
                                     'Data': d_row
                                 })
                             
                             if 'mean_gap_scenario' in locals() and mean_gap_scenario:
                                 scenario_rows.append({
+                                    'Type': "Mean Pip Gap (Max DD Day)",
+                                    'Date': max_gap_day.date() if max_gap_day else "N/A",
+                                    'BasePipGap': f"{global_avg_gap:.2f}",
+                                    'FXFactor': f"{max_gap_fx_factor:.4f}",
                                     'Label': f"Scenario: Mean Pip Gap on Max DD Day ({max_gap_day.date() if max_gap_day else 'N/A'}) | Base Pip Gap: {global_avg_gap:.2f} | USD Conv Factor: {max_gap_fx_factor:.4f}",
                                     'Data': mean_gap_scenario
                                 })
@@ -1572,39 +1604,49 @@ def main():
                                         last_gap = curr_gap
                                 except: pass
 
-                                # Header for this scenario
-                                f.write("<thead>\n")
-                                f.write(f"<tr style='background-color: #f2f2f2;'><th colspan='25' style='padding: 4px; text-align: left;'><b>{s_row['Label']}</b></th></tr>\n")
-                                f.write("<tr><th style='padding: 2px;'>Header</th>")
+                                # Full Report: Tables per scenario
+                                f.write("<thead>\n", short=False)
+                                f.write(f"<tr style='background-color: #f2f2f2;'><th colspan='25' style='padding: 4px; text-align: left;'><b>{s_row['Label']}</b></th></tr>\n", short=False)
+                                f.write("<tr><th style='padding: 2px;'>Header</th>", short=False)
                                 for b in range(1, 21):
                                     if b == breach_idx:
-                                        f.write("<th style='padding: 2px; color: red;'>Threshold: $1,000</th>")
-                                    f.write(f"<th style='padding: 2px;'>L{b}</th>")
-                                f.write("</tr>\n</thead>\n<tbody>\n")
+                                        f.write("<th style='padding: 2px; color: red;'>Threshold: $1,000</th>", short=False)
+                                    f.write(f"<th style='padding: 2px;'>L{b}</th>", short=False)
+                                f.write("</tr>\n</thead>\n<tbody>\n", short=False)
 
-                                # Row for Lot / Gap
-                                f.write("<tr><td style='padding: 2px;'><b>Lot / Gap</b></td>")
+                                f.write("<tr><td style='padding: 2px;'><b>Lot / Gap</b></td>", short=False)
                                 for b in range(1, 21):
                                     if b == breach_idx:
-                                        # Inject 1k cell with red border
-                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>{k1_gap_val_str}</td>")
-                                    f.write(f"<td style='padding: 2px;'>{d_row.get(f'Lot{b}', 0):.2f} / {d_row.get(f'Gap{b}', 0):,.0f}</td>")
-                                f.write("</tr>\n")
+                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>{k1_gap_val_str}</td>", short=False)
+                                    f.write(f"<td style='padding: 2px;'>{d_row.get(f'Lot{b}', 0):.2f} / {d_row.get(f'Gap{b}', 0):,.0f}</td>", short=False)
+                                f.write("</tr>\n", short=False)
                                 
-                                # Row for DD
-                                f.write("<tr><td style='padding: 2px;'><b>DD (USD)</b></td>")
+                                f.write("<tr><td style='padding: 2px;'><b>DD (USD)</b></td>", short=False)
                                 for b in range(1, 21):
                                     if b == breach_idx:
-                                        # Inject 1k cell with red border
-                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>$1,000</td>")
+                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>$1,000</td>", short=False)
                                     dd_val = d_row.get(f'DD{b}', 0)
                                     style = f"padding: 2px; color: {'red' if dd_val >= 1000 else 'black'}; font-weight: {'bold' if dd_val >= 1000 else 'normal'};"
-                                    f.write(f"<td style='{style}'>{dd_val:,.0f}</td>")
-                                f.write("</tr>\n")
-                                f.write("</tbody>") # Close tbody for each scenario to allow thead to repeat
+                                    f.write(f"<td style='{style}'>{dd_val:,.0f}</td>", short=False)
+                                f.write("</tr>\n", short=False)
+                                f.write("</tbody>\n", short=False)
 
+                                # Short Report: Single row in clubbed table
+                                breach_str = f"L{breach_idx}-L{breach_idx+1}" if breach_idx != -1 else "N/A"
+                                f.write("<tr>", full=False)
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s_row.get('Type', 'N/A')}</td>", full=False)
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s_row.get('Date', 'N/A')}</td>", full=False)
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s_row.get('BasePipGap', 'N/A')}</td>", full=False)
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s_row.get('FXFactor', 'N/A')}</td>", full=False)
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{breach_str}</td>", full=False)
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: red;'>{k1_gap_val_str}</td>", full=False)
+                                f.write("</tr>\n", full=False)
+
+                            # Close short report table body
+                            f.write("</tbody>\n", full=False)
                             
-                            f.write("</tbody></table></div></li>\n")
+                            # Final close for both
+                            f.write("</table></div></li>\n")
                             
                             # --- New Table: 1k Drawdown Threshold vs. Starting Lot (Horizontal) ---
                             try:
@@ -1663,34 +1705,34 @@ def main():
                                         lot_results[st_lot] = {'gap': final_k1_gap, 'lots': total_lots_k1, 'level': level_k1}
                                     
                                     # Output Table
-                                    f.write("<li><strong>1k Drawdown Threshold vs. Starting Lot (Pips)</strong>:\n")
-                                    f.write("<div style='overflow-x: auto;'>\n")
-                                    f.write("<table style='margin: 10px 0; font-size: 10px; border-collapse: collapse; min-width: 300px;'>\n")
-                                    f.write("<thead><tr style='background-color: #f2f2f2;'>")
-                                    f.write("<th style='border: 1px solid #ddd; padding: 4px;'>Starting Lot</th>")
+                                    f.write("<li><strong>1k Drawdown Threshold vs. Starting Lot (Pips)</strong>:\n", short=False)
+                                    f.write("<div style='overflow-x: auto;'>\n", short=False)
+                                    f.write("<table style='margin: 10px 0; font-size: 10px; border-collapse: collapse; min-width: 300px;'>\n", short=False)
+                                    f.write("<thead><tr style='background-color: #f2f2f2;'>", short=False)
+                                    f.write("<th style='border: 1px solid #ddd; padding: 4px;'>Starting Lot</th>", short=False)
                                     for lt in target_lots:
-                                        f.write(f"<th style='border: 1px solid #ddd; padding: 4px;'>{lt}</th>")
-                                    f.write("</tr></thead>\n<tbody>\n")
+                                        f.write(f"<th style='border: 1px solid #ddd; padding: 4px;'>{lt}</th>", short=False)
+                                    f.write("</tr></thead>\n<tbody>\n", short=False)
                                     
                                     # Pip Gap Row
-                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>1k Pip Gap</b></td>")
+                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>1k Pip Gap</b></td>", short=False)
                                     for lt in target_lots:
-                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['gap']}</td>")
-                                    f.write("</tr>\n")
+                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['gap']}</td>", short=False)
+                                    f.write("</tr>\n", short=False)
                                     
                                     # Total Lots Row
-                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Total Lots</b></td>")
+                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Total Lots</b></td>", short=False)
                                     for lt in target_lots:
-                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['lots']}</td>")
-                                    f.write("</tr>\n")
+                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['lots']}</td>", short=False)
+                                    f.write("</tr>\n", short=False)
                                     
                                     # Trade Level Row
-                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Trade Level</b></td>")
+                                    f.write("<tr><td style='border: 1px solid #ddd; padding: 4px;'><b>Trade Level</b></td>", short=False)
                                     for lt in target_lots:
-                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['level']}</td>")
-                                    f.write("</tr>\n")
+                                        f.write(f"<td style='border: 1px solid #ddd; padding: 4px; text-align: center;'>{lot_results[lt]['level']}</td>", short=False)
+                                    f.write("</tr>\n", short=False)
                                     
-                                    f.write("</tbody></table></div></li>\n")
+                                    f.write("</tbody></table></div></li>\n", short=False)
                             except Exception as ex_sim:
                                 f.write(f"<li><strong style='color: red;'>Simulation Error</strong>: {ex_sim}</li>\n")
                         elif 'theoretical_skip_reason' in locals() and theoretical_skip_reason:
@@ -1712,6 +1754,8 @@ def main():
     # Automatically open in default browser
     try:
         webbrowser.open(clickable_link)
+        short_link = f"file:///{short_report_path.replace(os.sep, '/')}"
+        webbrowser.open(short_link)
     except Exception as e:
         print(f"Could not automatically open browser: {e}")
 
