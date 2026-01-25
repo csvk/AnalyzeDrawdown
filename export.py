@@ -41,28 +41,54 @@ def export_files():
     path_map = {os.path.basename(row['FilePath']): row['FilePath'] for _, row in df_list.iterrows()}
 
     # 4. Parse Full_Analysis.html for reports in the Monthly Contributor Breakdown
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        print("Error: BeautifulSoup (bs4) is required. Install it with: pip install beautifulsoup4")
+        return
+
     with open(full_analysis_path, 'r', encoding='utf-8') as f:
         html_content = f.read()
 
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
     # Extract the table section for Monthly Contributor Breakdown
-    # It starts after <h2>Monthly Contributor Breakdown</h2> and ends before the next <h2> or </table>
-    table_match = re.search(r'<h2>Monthly Contributor Breakdown</h2>.*?<table>(.*?)</table>', html_content, re.DOTALL)
-    if not table_match:
-        print("Error: Could not find Monthly Contributor Breakdown table in Full_Analysis.html")
+    h2_contributor = soup.find(['h2', 'h3'], string=lambda t: t and 'Monthly Contributor Breakdown' in t)
+    if not h2_contributor:
+        # Fallback for slightly different header text
+        h2_contributor = soup.find(lambda tag: tag.name in ['h2', 'h3'] and 'Monthly Contributor Breakdown' in tag.get_text())
+    
+    if not h2_contributor:
+        print("Error: Could not find Monthly Contributor Breakdown section in Full_Analysis.html")
         return
 
-    table_content = table_match.group(1)
-    # Find all file names inside <code> tags within the table rows (excluding the header/total rows if they somehow match)
-    # The filenames are typically in the 3rd column
-    file_names = re.findall(r'<code>(.*?)</code>', table_content)
-    
-    # Filter out potential duplicates and ensure they exist in our path_map
+    table = h2_contributor.find_next('table')
+    if not table:
+        print("Error: Could not find table after Monthly Contributor Breakdown header.")
+        return
+
     selected_files = []
     seen = set()
-    for name in file_names:
-        if name in path_map and name not in seen:
-            selected_files.append(name)
-            seen.add(name)
+    
+    rows = table.find_all('tr')[1:] # Skip header row
+    for row in rows:
+        cols = row.find_all('td')
+        if len(cols) < 3: continue
+        
+        # Check if this is a Total row (skip it)
+        row_text = row.get_text()
+        if "Total" in row_text:
+            continue
+            
+        # The filename is in the 3rd column (index 2)
+        report_file_td = cols[2]
+        # It's usually inside a <code> tag, possibly within an <a> tag
+        code_tag = report_file_td.find('code')
+        if code_tag:
+            name = code_tag.get_text(strip=True)
+            if name in path_map and name not in seen:
+                selected_files.append(name)
+                seen.add(name)
 
     if not selected_files:
         print("No report files found in the Monthly Contributor Breakdown table.")
@@ -126,7 +152,7 @@ def export_files():
         htm_dir = os.path.dirname(original_htm_path)
         csv_in_folder = os.path.join(os.path.dirname(htm_dir), "CSV")
         if os.path.exists(csv_in_folder):
-            parquet_pattern = os.path.join(csv_in_folder, f"{base_name}*.parquet")
+            parquet_pattern = os.path.join(csv_in_folder, f"{base_name}.parquet")
             matches = glob.glob(parquet_pattern)
             if matches:
                 for match in matches:

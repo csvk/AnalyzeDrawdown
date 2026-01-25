@@ -104,62 +104,113 @@ if __name__ == "__main__":
             f.write(error_msg + '\n')
         sys.exit(1)
 
-    # Detect file types
-    files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
-    has_set = any(f.lower().endswith('.set') for f in files)
-    has_chr = any(f.lower().endswith('.chr') for f in files)
+    # Detect file types in root
+    files_root = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
+    has_set_root = any(f.lower().endswith('.set') for f in files_root)
+    has_chr_root = any(f.lower().endswith('.chr') for f in files_root)
 
-    if has_set and has_chr:
+    process_chr = False
+    process_set = False
+    set_directory = directory
+
+    if has_set_root and has_chr_root:
         error_msg = "Error: Input directory contains both *.set and *.chr files. Please provide a directory with only one type."
         print(error_msg, flush=True)
         with open(os.path.join(directory, 'error_log.txt'), 'w') as f:
             f.write(error_msg + '\n')
         sys.exit(1)
     
-    if not has_set and not has_chr:
+    if has_set_root:
+        process_set = True
+        set_directory = directory
+        file_ext_name = 'set'
+    elif has_chr_root:
+        process_chr = True
+        file_ext_name = 'chr'
+        # Check for sets or set subdirectory
+        for subdir_name in ['sets', 'set']:
+            subdir_path = os.path.join(directory, subdir_name)
+            if os.path.isdir(subdir_path):
+                subdir_files = [f for f in os.listdir(subdir_path) if f.lower().endswith('.set')]
+                if subdir_files:
+                    process_set = True
+                    set_directory = subdir_path
+                    file_ext_name = 'chr_and_set'
+                    break
+    else:
         error_msg = f"Error: No .set or .chr files found in {directory}"
         print(error_msg, flush=True)
         with open(os.path.join(directory, 'error_log.txt'), 'w') as f:
             f.write(error_msg + '\n')
         sys.exit(1)
 
-    file_ext = 'set' if has_set else 'chr'
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_file = f'all_sets_{file_ext}_{timestamp}.csv'
-    all_data = []
-
-    for filename in files:
-        if filename.lower().endswith('.' + file_ext):
-            try:
-                df = read_inputs_from_file(os.path.join(directory, filename), file_ext)
-                # Add filename as first column
-                df.insert(0, 'Filename', filename)
-                all_data.append(df)
-            except Exception as e:
-                print(f"Error reading file {filename}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+    out_file = f'all_sets_{file_ext_name}_{timestamp}.csv'
     
-    # Concatenate all DataFrames
-    if not all_data:
-        error_msg = f"Error: No valid data could be extracted from any .{file_ext} files in {directory}"
-        print(error_msg, flush=True)
-        with open(os.path.join(directory, 'error_log.txt'), 'w') as f:
-            f.write(error_msg + '\n')
-        sys.exit(1)
+    chr_dfs = []
+    set_dfs = []
+
+    # Process CHR files if found in root
+    if process_chr:
+        for filename in files_root:
+            if filename.lower().endswith('.chr'):
+                try:
+                    df = read_inputs_from_file(os.path.join(directory, filename), 'chr')
+                    df.insert(0, 'Filename', filename)
+                    chr_dfs.append(df)
+                except Exception as e:
+                    print(f"Error reading chr file {filename}: {e}")
+                    continue
+
+    # Process SET files if found in root or subdir
+    if process_set:
+        files_set = [f for f in os.listdir(set_directory) if f.lower().endswith('.set')]
+        for filename in files_set:
+            try:
+                df = read_inputs_from_file(os.path.join(set_directory, filename), 'set')
+                df.insert(0, 'Filename', filename)
+                set_dfs.append(df)
+            except Exception as e:
+                print(f"Error reading set file {filename}: {e}")
+                continue
 
     try:
-        final_df = pd.concat(all_data, ignore_index=True)
-        final_df.to_csv(os.path.join(directory, out_file), index=False)
-        success_msg = f"Data has been written to {os.path.join(directory, out_file)}"
+        output_path = os.path.join(directory, out_file)
+        
+        if chr_dfs and set_dfs:
+            # Both types processed
+            final_chr_df = pd.concat(chr_dfs, ignore_index=True)
+            final_set_df = pd.concat(set_dfs, ignore_index=True)
+            
+            # Write CHR table
+            final_chr_df.to_csv(output_path, index=False)
+            
+            # Append empty rows and SET table
+            with open(output_path, 'a', newline='') as f:
+                f.write('\n\n\n') # 3 empty rows
+            
+            final_set_df.to_csv(output_path, mode='a', index=False)
+            success_msg = f"Data (CHR and SET) has been written to {output_path}"
+        
+        elif chr_dfs:
+            final_chr_df = pd.concat(chr_dfs, ignore_index=True)
+            final_chr_df.to_csv(output_path, index=False)
+            success_msg = f"Data (CHR only) has been written to {output_path}"
+            
+        elif set_dfs:
+            final_set_df = pd.concat(set_dfs, ignore_index=True)
+            final_set_df.to_csv(output_path, index=False)
+            success_msg = f"Data (SET only) has been written to {output_path}"
+        else:
+            raise ValueError("No data extracted from any files.")
+
         print(success_msg, flush=True)
+
     except Exception as e:
         error_msg = f"Error processing files: {e}"
         print(error_msg, flush=True)
         import traceback
         traceback.print_exc()
-        # Write error to log file in target directory
         with open(os.path.join(directory, 'error_log.txt'), 'w') as f:
             f.write(error_msg + '\n')
             traceback.print_exc(file=f)

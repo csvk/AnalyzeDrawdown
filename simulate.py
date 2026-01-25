@@ -200,12 +200,10 @@ def parse_full_analysis(html_path):
     final_data = []
     for item in contributor_data:
         basename = os.path.splitext(item['ReportFile'])[0]
-        # Match by trying exact match or partial match
         details = None
         if basename in report_details:
             details = report_details[basename]
         else:
-            # Try to find which key in report_details contains the basename
             for k in report_details.keys():
                 if basename in k or k in basename:
                     details = report_details[k]
@@ -214,7 +212,6 @@ def parse_full_analysis(html_path):
         if details:
             item.update(details)
         else:
-            # Fallback defaults
             item.update({
                 'InitialLot': 0.01,
                 'MaxDD': 0.0,
@@ -226,9 +223,20 @@ def parse_full_analysis(html_path):
             })
         final_data.append(item)
 
-    return final_data
+    # 4. Extract Hidden Daily DD Data for conservative portfolio aggregation
+    daily_dd_df = pd.DataFrame()
+    dd_comment = re.search(r'<!-- DAILY_DD_DATA_START\n(.*?)\nDAILY_DD_DATA_END -->', content, re.DOTALL)
+    if dd_comment:
+        try:
+            from io import StringIO
+            daily_dd_df = pd.read_csv(StringIO(dd_comment.group(1).strip()), index_col=0)
+            daily_dd_df.columns = [os.path.splitext(os.path.basename(c))[0] for c in daily_dd_df.columns]
+        except Exception as e:
+            print(f"Warning: Could not parse hidden Daily DD data: {e}")
 
-def generate_sim_html(data, output_path):
+    return final_data, daily_dd_df
+
+def generate_sim_html(data, daily_dd_df, output_path):
     sim_lots = [0.01, 0.02, 0.03, 0.04, 0.05]
     
     html = """<!DOCTYPE html>
@@ -318,8 +326,25 @@ def generate_sim_html(data, output_path):
     
     for lot in sim_lots:
         sim_total_pnl = sum(item['TotalProfit'] * (lot / item['InitialLot'] if item['InitialLot'] > 0 else 0) for item in data)
-        sim_total_dd = sum(item['MaxDD'] * (lot / item['InitialLot'] if item['InitialLot'] > 0 else 0) for item in data)
-        html += f"<td><b>{sim_total_pnl:.2f}</b></td><td><b>{sim_total_dd:.2f}</b></td><td colspan='2' style='background:#f9f9f9;'></td>"
+        
+        # Calculate Conservative Total Max DD (sum of daily maxes)
+        sim_total_dd = 0
+        if not daily_dd_df.empty:
+            scaled_daily_dds = pd.DataFrame(index=daily_dd_df.index)
+            for item in data:
+                basename = os.path.splitext(item['ReportFile'])[0]
+                if basename in daily_dd_df.columns:
+                    multiplier = lot / item['InitialLot'] if item['InitialLot'] > 0 else 0
+                    scaled_daily_dds[basename] = daily_dd_df[basename] * multiplier
+            
+            if not scaled_daily_dds.empty:
+                # daily_sum is negative, take the min (worst DD)
+                sim_total_dd = scaled_daily_dds.sum(axis=1).min()
+        else:
+            # Fallback to absolute sum if daily data is missing
+            sim_total_dd = sum(item['MaxDD'] * (lot / item['InitialLot'] if item['InitialLot'] > 0 else 0) for item in data)
+            
+        html += f"<td><b>{sim_total_pnl:.2f}</b></td><td><b>{abs(sim_total_dd):.2f}</b></td><td colspan='2' style='background:#f9f9f9;'></td>"
     
     html += """
 </tbody>
@@ -339,9 +364,10 @@ def main():
     html_path = os.path.join(args.directory, "Full_Analysis.html")
     sim_path = os.path.join(args.directory, "sim.html")
 
-    data = parse_full_analysis(html_path)
-    if data:
-        generate_sim_html(data, sim_path)
+    result = parse_full_analysis(html_path)
+    if result:
+        data, daily_dd_df = result
+        generate_sim_html(data, daily_dd_df, sim_path)
         
         # Automatically open in default browser
         try:

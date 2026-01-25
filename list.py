@@ -39,13 +39,19 @@ def generate_file_list():
     # Prepare data for CSV
     data = []
     for f in htm_files:
+        basename = os.path.basename(f)
+        # Set Include=0 for _ld variation patterns (e.g., *_ld1.htm)
+        include_val = 1
+        if re.search(r'_ld\d+', basename, re.IGNORECASE):
+            include_val = 0
+            
         data.append({
             'FilePath': os.path.abspath(f),
-            'Include': 1
+            'Include': include_val
         })
 
-    # Sort by filename for consistency
-    data.sort(key=lambda x: os.path.basename(x['FilePath']))
+    # Sort by filename in ascending order for consistency
+    data.sort(key=lambda x: os.path.basename(x['FilePath']).lower())
 
     df = pd.DataFrame(data)
 

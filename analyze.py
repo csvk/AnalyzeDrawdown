@@ -28,6 +28,13 @@ def main():
     args = parser.parse_args()
 
     output_dir = os.path.abspath(args.output_folder)
+    
+    # Initialize shared variables
+    report_daily_max_dds = {}
+    table_html = ""
+    portfolio_max_dd_abs = 0.0
+    portfolio_max_dd_pct = 0.0
+    portfolio_max_dd_time = "N/A"
 
     # 1. Locate Trades folder and create Charts folder
     trades_folder = os.path.join(output_dir, "Trades")
@@ -96,9 +103,8 @@ def main():
         deals_grouped = df_deals.copy()
         deals_grouped['Time'] = deals_grouped['Time'].dt.floor('1min')
         
-        # Balance changes only at exit ('out' or 'in/out')
-        balance_deals = deals_grouped[deals_grouped['Direction'].str.lower().isin(['out', 'in/out'])]
-        balance_changes = balance_deals.groupby('Time')['DealPnL'].sum()
+        # Balance changes at every deal (Profit + Commission + Swap)
+        balance_changes = deals_grouped.groupby('Time')['DealPnL'].sum()
 
         # Map to grid
         portfolio.loc[balance_changes.index, 'BalancePnL'] = balance_changes.values
@@ -174,7 +180,6 @@ def main():
         except: pass
 
     # 8. Consolidated Monthly Contributor Table (with Gradient Color Coding)
-    table_html = ""
     if not df_deals.empty:
         df_deals['Month'] = df_deals['Time'].dt.to_period('M')
         # Group by File, Symbol, and Month
@@ -248,7 +253,294 @@ def main():
     else:
         table_html = "No trades included in the aggregate portfolio for the specified period.\n\n"
 
+    # --- Helper Functions ---
+    def load_parquet_data(html_file_path):
+        """Tries to find and load corresponding parquet file from sibling CSV folder."""
+        try:
+            base_dir = os.path.dirname(html_file_path)
+            csv_folder = os.path.join(os.path.dirname(base_dir), "CSV")
+            if not os.path.exists(csv_folder):
+                return None
+            
+            filename_no_ext = os.path.splitext(os.path.basename(html_file_path))[0]
+            parquet_pattern = os.path.join(csv_folder, f"{filename_no_ext}*.parquet")
+            matches = glob.glob(parquet_pattern)
+            
+            if not matches:
+                return None
+                
+            p_df = pd.read_parquet(matches[0])
+            if p_df.empty: return None
+            
+            # Parse tab-separated format
+            cols = p_df.columns[0].split('\t')
+            data = [row[0].split('\t') for row in p_df.values]
+            df_parsed = pd.DataFrame(data, columns=cols)
+            
+            # Cleanup names and types
+            df_parsed.columns = [c.replace('<', '').replace('>', '').strip() for c in df_parsed.columns]
+            df_parsed['DATE'] = pd.to_datetime(df_parsed['DATE'], format='%Y.%m.%d %H:%M', errors='coerce')
+            df_parsed = df_parsed.dropna(subset=['DATE'])
+            
+            for c in ['BALANCE', 'EQUITY']:
+                if c in df_parsed.columns:
+                    df_parsed[c] = pd.to_numeric(df_parsed[c], errors='coerce').fillna(0)
+                    
+            return df_parsed.sort_values('DATE')
+        except Exception as e:
+            print(f"Warning: Could not parse parquet for {html_file_path}: {e}")
+            return None
 
+    def parse_set_file(html_file_path, sets_dir):
+        """Reads .set file from the provided sets directory with robust matching."""
+        target_params = {
+            "lotsize": "LotSize",
+            "maxlots": "MaxLots",
+            "lotsizeexponent": "LotSizeExponent",
+            "delaytradesequence": "DelayTradeSequence",
+            "livedelay": "LiveDelay",
+            "maxorders": "MaxOrders",
+            "stoploss": "StopLoss",
+            "pipstep": "PipStep",
+            "pipstepexponent": "PipStepExponent",
+            "maxpipstep": "MaxPipStep"
+        }
+        results = {v: "N/A" for v in target_params.values()}
+        
+        try:
+            base_name = os.path.splitext(os.path.basename(html_file_path))[0]
+            set_path = os.path.join(sets_dir, f"{base_name}.set")
+
+            if not os.path.exists(set_path):
+                print(f"  Warning: .set file not found at {set_path}")
+                return results
+
+            content = None
+            # Try common encodings for MT4/MT5 .set files
+            for enc in ['utf-16', 'utf-16-le', 'utf-8', 'latin-1', 'cp1252']:
+                try:
+                    with open(set_path, 'r', encoding=enc, errors='ignore') as sf:
+                        content = sf.read()
+                        if '=' in content:
+                            # print(f"  Info: Successfully read {set_path} with {enc}")
+                            break
+                except:
+                    continue
+            
+            if content:
+                for line in content.splitlines():
+                    if '=' in line:
+                        # Split only on the first '='
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            key = parts[0].strip().lower()
+                            val = parts[1].strip()
+                            if key in target_params:
+                                clean_val = val.split('||')[0].strip()
+                                results[target_params[key]] = clean_val
+            else:
+                print(f"  Warning: Could not read content of {set_path}")
+            
+            return results
+        except Exception as e:
+            print(f"Warning: Error parsing .set file for {html_file_path}: {e}")
+            return results
+
+    def extract_report_metrics(html_file_path):
+        """Extracts Profit Factor and Recovery Factor from the HTML report."""
+        metrics = {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
+        if not html_file_path or not os.path.exists(html_file_path):
+            return metrics
+        
+        try:
+            content = None
+            for encoding in ['utf-16', 'utf-8', 'cp1252']:
+                try:
+                    with open(html_file_path, 'r', encoding=encoding, errors='ignore') as f:
+                        content = f.read()
+                    if content: break
+                except: continue
+            
+            if not content: return metrics
+
+            soup = BeautifulSoup(content, 'lxml')
+            
+            # Profit Factor
+            # Search for text containing "Profit Factor"
+            # MT5 Report structure usually: <td ...>Profit Factor:</td><td ...>1.23</td>
+            pf_node = soup.find(string=lambda text: text and "Profit Factor" in text)
+            if pf_node:
+                parent = pf_node.find_parent('td')
+                if parent:
+                    next_td = parent.find_next_sibling('td')
+                    if next_td:
+                        metrics['ProfitFactor'] = next_td.get_text(strip=True)
+
+            # Recovery Factor
+            rf_node = soup.find(string=lambda text: text and "Recovery Factor" in text)
+            if rf_node:
+                parent = rf_node.find_parent('td')
+                if parent:
+                    next_td = parent.find_next_sibling('td')
+                    if next_td:
+                        metrics['RecoveryFactor'] = next_td.get_text(strip=True)
+                        
+        except Exception as e:
+            print(f"Warning: Error extracting metrics from {html_file_path}: {e}")
+        
+        return metrics
+
+    def load_all_fx_rates(base_dir):
+        """Loads daily FX closing prices from the prices/ folder."""
+        prices_dir = os.path.join(base_dir, "prices")
+        rates = {}
+        if os.path.exists(prices_dir):
+            files = glob.glob(os.path.join(prices_dir, "*.csv"))
+            for f in files:
+                s = os.path.splitext(os.path.basename(f))[0].upper()
+                try:
+                    rdf = pd.read_csv(f)
+                    rdf['Date'] = pd.to_datetime(rdf['Date']).dt.date
+                    rdf.set_index('Date', inplace=True)
+                    rates[s] = rdf
+                except: pass
+        return rates
+
+    all_fx_rates = load_all_fx_rates(output_dir)
+
+    def get_usd_conv_factor(symbol, target_date, fx_rates):
+        """Calculates conversion factor to USD based on the quote currency."""
+        # Clean symbol (remove suffixes like .m, .pro, etc.)
+        # Assuming standard 6-char pair is at the start
+        clean_symbol = symbol.split('.')[0].split('_')[0]
+        if len(clean_symbol) < 6:
+            # Try to extract first 6 alphas if delimiters failed
+            import re
+            match = re.match(r'^([A-Za-z]{6})', symbol)
+            if match:
+                clean_symbol = match.group(1)
+            else:
+                return 1.0
+        
+        clean_symbol = clean_symbol.upper()
+        quote = clean_symbol[3:] # Last 3 chars of the pair (e.g. JPY from USDJPY)
+        
+        if quote == "USD": return 1.0
+        
+        # Pairs to look for: USD{Quote} (e.g. USDJPY) or {Quote}USD (e.g. GBPUSD)
+        s1, s2 = f"USD{quote}", f"{quote}USD"
+        target_d = target_date.date() if hasattr(target_date, 'date') else target_date
+        
+        # Helper to find rate
+        def find_rate(sym_key, invert):
+            if sym_key in fx_rates:
+                df = fx_rates[sym_key]
+                try:
+                    # Use get_indexer to find nearest date (method='pad' for forward fill)
+                    idx = df.index.get_indexer([target_d], method='pad')[0]
+                    if idx != -1:
+                        row_val = df.iloc[idx]
+                        # Handle different column names (list.py saves as 'Price', yahoo might return 'Close', 'Adj Close')
+                        if 'Price' in row_val: val = row_val['Price']
+                        elif 'Close' in row_val: val = row_val['Close']
+                        elif 'Adj Close' in row_val: val = row_val['Adj Close']
+                        else: val = row_val.iloc[0] # Fallback to first column
+                        
+                        return 1.0/val if invert else val
+                except: pass
+            return None
+
+        # Try exact match first
+        r = find_rate(s1, True) # USDGBP -> Invert to get USD value? No.
+        # If pair is USDJPY (Base=USD, Quote=JPY). Price is JPY per USD.
+        # Value in Quote (JPY). To get USD: Divide by Price (USD/JPY).
+        # So if we find USDJPY, we want (1/Rate). Correct. (Invert=True)
+        
+        if r is not None: return r
+        
+        r = find_rate(s2, False) # GBPUSD. Price is USD per GBP.
+        # Value in Quote (GBP). To get USD: Multiply by Price.
+        # So if we find GBPUSD, we want Rate. Correct. (Invert=False)
+        
+        if r is not None: return r
+        
+        # If we are here, we failed to find a rate.
+        # Print a warning once per symbol to avoid spam?
+        # For now, just print to console
+        # print(f"Warning: No FX rate found for {symbol} (Quote: {quote}) on {target_d}. Using 1.0.")
+        return 1.0
+
+
+    # 7. Pre-calculate Portfolio-wide Conservative Max DD
+    report_daily_max_dds = {}
+    included_files_set = set(df_deals['SourceFile'].unique()) if not df_deals.empty else set()
+    
+    # We only need this for included files
+    if not df_deals.empty:
+        print("Pre-calculating daily drawdowns for portfolio aggregation...")
+        # Get list of files to process
+        reports_to_process = []
+        if os.path.exists(report_list_path):
+            try:
+                df_list_all = pd.read_csv(report_list_path)
+                for _, row_all in df_list_all.iterrows():
+                    fname = os.path.basename(row_all['FilePath'])
+                    if fname in included_files_set:
+                        reports_to_process.append({
+                            'basename': os.path.splitext(fname)[0],
+                            'full_html_path': row_all['FilePath']
+                        })
+            except: pass
+        
+        if not reports_to_process:
+            # Fallback
+            for f_name in included_files_set:
+                reports_to_process.append({
+                    'basename': os.path.splitext(f_name)[0],
+                    'full_html_path': html_path_map.get(f_name)
+                })
+
+        for r_info in reports_to_process:
+            r_base = r_info['basename']
+            r_html = r_info['full_html_path']
+            
+            # Load parquet or trades
+            df_pq = load_parquet_data(r_html) if r_html else None
+            if df_pq is not None:
+                df_pq_f = df_pq[(df_pq['DATE'] >= calc_start) & (df_pq['DATE'] < calc_end)]
+                if not df_pq_f.empty:
+                    df_pq_f = df_pq_f.copy()
+                    df_pq_f['Peak'] = df_pq_f['EQUITY'].expanding().max()
+                    df_pq_f['DD_Abs'] = df_pq_f['EQUITY'] - df_pq_f['Peak']
+                    df_pq_f['DateOnlyDD'] = df_pq_f['DATE'].dt.date
+                    report_daily_max_dds[r_base] = df_pq_f.groupby('DateOnlyDD')['DD_Abs'].min()
+            else:
+                # Fallback to trades
+                atf_path = os.path.join(trades_folder, f"all_trades_{r_base}.csv")
+                if os.path.exists(atf_path):
+                    df_at_tmp = pd.read_csv(atf_path)
+                    if not df_at_tmp.empty:
+                        df_at_tmp['Time'] = pd.to_datetime(df_at_tmp['Time'])
+                        # Filter by range
+                        df_at_tmp = df_at_tmp[(df_at_tmp['Time'] >= calc_start) & (df_at_tmp['Time'] < calc_end)]
+                        if not df_at_tmp.empty:
+                            df_at_tmp['DealPnL'] = df_at_tmp['Profit'] + df_at_tmp['Commission'] + df_at_tmp['Swap']
+                            df_at_tmp = df_at_tmp.sort_values('Time')
+                            df_at_tmp['CumPnL'] = df_at_tmp['DealPnL'].cumsum()
+                            df_at_tmp['Balance'] = df_at_tmp['CumPnL'] + args.base
+                            df_at_tmp['Peak'] = df_at_tmp['Balance'].expanding().max()
+                            df_at_tmp['DD_Abs'] = df_at_tmp['Balance'] - df_at_tmp['Peak']
+                            df_at_tmp['DateOnlyDD'] = df_at_tmp['Time'].dt.date
+                            report_daily_max_dds[r_base] = df_at_tmp.groupby('DateOnlyDD')['DD_Abs'].min()
+
+    # Calculate Global Portfolio DD Sum if we have data
+    if report_daily_max_dds:
+        df_daily_all = pd.DataFrame(report_daily_max_dds).fillna(0)
+        daily_portfolio_dd_sum = df_daily_all.sum(axis=1)
+        if not daily_portfolio_dd_sum.empty:
+            portfolio_max_dd_abs = daily_portfolio_dd_sum.min()
+            portfolio_max_dd_time = daily_portfolio_dd_sum.idxmin()
+            portfolio_max_dd_pct = (portfolio_max_dd_abs / args.base) * 100 if args.base != 0 else 0
 
     # 9. Compile HTML Report
     num_included = df_deals['SourceFile'].nunique()
@@ -336,11 +628,31 @@ def main():
         else:
             f.write("<p>Portfolio Overview chart is not available (no portfolio-wide trades found).</p>\n\n")
         
+        # 11. Final Portfolio Stats Update (Conservative Daily-Sum Max DD)
+        if report_daily_max_dds:
+            # Combine all daily series into a dataframe. Items are negative drawdowns.
+            df_daily_all = pd.DataFrame(report_daily_max_dds).fillna(0)
+            # Sum rows (daily totals of max drawdowns from all included reports)
+            daily_portfolio_dd_sum = df_daily_all.sum(axis=1)
+            
+            if not daily_portfolio_dd_sum.empty:
+                portfolio_max_dd_abs = daily_portfolio_dd_sum.min()
+                portfolio_max_dd_time = daily_portfolio_dd_sum.idxmin()
+                portfolio_max_dd_pct = (portfolio_max_dd_abs / args.base) * 100 if args.base != 0 else 0
+                
+                # Write a hidden table with daily DDs per report for simulate.py
+                f.write("\n<!-- DAILY_DD_DATA_START\n")
+                # Format: Date,Report1_DD,Report2_DD,...
+                # We save CSV format here for easy parsing
+                f.write(df_daily_all.to_csv())
+                f.write("DAILY_DD_DATA_END -->\n")
+
         # Monthly breakdown table (already HTML but needs title fixup)
         # Note: table_html was constructed with markdown headers previously
         table_html_clean = table_html.replace("## Monthly Contributor Breakdown\n\n", "<h2>Monthly Contributor Breakdown</h2>\n")
         f.write(table_html_clean)
 
+        # 11. Final summary boxes and lists
         if explicitly_skipped:
             f.write("<h2>Explicitly Excluded Reports</h2>\n")
             f.write("<p>These files were skipped because they were marked with <code>Include = 0</code> in the report list:</p>\n")
@@ -366,221 +678,6 @@ def main():
         
         all_trades_files = glob.glob(os.path.join(trades_folder, "all_trades_*.csv"))
         
-        def load_parquet_data(html_file_path):
-            """Tries to find and load corresponding parquet file from sibling CSV folder."""
-            try:
-                base_dir = os.path.dirname(html_file_path)
-                csv_folder = os.path.join(os.path.dirname(base_dir), "CSV")
-                if not os.path.exists(csv_folder):
-                    return None
-                
-                filename_no_ext = os.path.splitext(os.path.basename(html_file_path))[0]
-                parquet_pattern = os.path.join(csv_folder, f"{filename_no_ext}*.parquet")
-                matches = glob.glob(parquet_pattern)
-                
-                if not matches:
-                    return None
-                    
-                p_df = pd.read_parquet(matches[0])
-                if p_df.empty: return None
-                
-                # Parse tab-separated format
-                cols = p_df.columns[0].split('\t')
-                data = [row[0].split('\t') for row in p_df.values]
-                df_parsed = pd.DataFrame(data, columns=cols)
-                
-                # Cleanup names and types
-                df_parsed.columns = [c.replace('<', '').replace('>', '').strip() for c in df_parsed.columns]
-                df_parsed['DATE'] = pd.to_datetime(df_parsed['DATE'], format='%Y.%m.%d %H:%M', errors='coerce')
-                df_parsed = df_parsed.dropna(subset=['DATE'])
-                
-                for c in ['BALANCE', 'EQUITY']:
-                    if c in df_parsed.columns:
-                        df_parsed[c] = pd.to_numeric(df_parsed[c], errors='coerce').fillna(0)
-                        
-                return df_parsed.sort_values('DATE')
-            except Exception as e:
-                print(f"Warning: Could not parse parquet for {html_file_path}: {e}")
-                return None
-
-        def parse_set_file(html_file_path, sets_dir):
-            """Reads .set file from the provided sets directory with robust matching."""
-            target_params = {
-                "lotsize": "LotSize",
-                "maxlots": "MaxLots",
-                "lotsizeexponent": "LotSizeExponent",
-                "delaytradesequence": "DelayTradeSequence",
-                "livedelay": "LiveDelay",
-                "maxorders": "MaxOrders",
-                "stoploss": "StopLoss",
-                "pipstep": "PipStep",
-                "pipstepexponent": "PipStepExponent",
-                "maxpipstep": "MaxPipStep"
-            }
-            results = {v: "N/A" for v in target_params.values()}
-            
-            try:
-                base_name = os.path.splitext(os.path.basename(html_file_path))[0]
-                set_path = os.path.join(sets_dir, f"{base_name}.set")
-
-                if not os.path.exists(set_path):
-                    print(f"  Warning: .set file not found at {set_path}")
-                    return results
-
-                content = None
-                # Try common encodings for MT4/MT5 .set files
-                for enc in ['utf-16', 'utf-16-le', 'utf-8', 'latin-1', 'cp1252']:
-                    try:
-                        with open(set_path, 'r', encoding=enc, errors='ignore') as sf:
-                            content = sf.read()
-                            if '=' in content:
-                                # print(f"  Info: Successfully read {set_path} with {enc}")
-                                break
-                    except:
-                        continue
-                
-                if content:
-                    for line in content.splitlines():
-                        if '=' in line:
-                            # Split only on the first '='
-                            parts = line.split('=', 1)
-                            if len(parts) == 2:
-                                key = parts[0].strip().lower()
-                                val = parts[1].strip()
-                                if key in target_params:
-                                    clean_val = val.split('||')[0].strip()
-                                    results[target_params[key]] = clean_val
-                else:
-                    print(f"  Warning: Could not read content of {set_path}")
-                
-                return results
-            except Exception as e:
-                print(f"Warning: Error parsing .set file for {html_file_path}: {e}")
-                return results
-
-        def extract_report_metrics(html_file_path):
-            """Extracts Profit Factor and Recovery Factor from the HTML report."""
-            metrics = {'ProfitFactor': 'N/A', 'RecoveryFactor': 'N/A'}
-            if not html_file_path or not os.path.exists(html_file_path):
-                return metrics
-            
-            try:
-                content = None
-                for encoding in ['utf-16', 'utf-8', 'cp1252']:
-                    try:
-                        with open(html_file_path, 'r', encoding=encoding, errors='ignore') as f:
-                            content = f.read()
-                        if content: break
-                    except: continue
-                
-                if not content: return metrics
-
-                soup = BeautifulSoup(content, 'lxml')
-                
-                # Profit Factor
-                # Search for text containing "Profit Factor"
-                # MT5 Report structure usually: <td ...>Profit Factor:</td><td ...>1.23</td>
-                pf_node = soup.find(string=lambda text: text and "Profit Factor" in text)
-                if pf_node:
-                    parent = pf_node.find_parent('td')
-                    if parent:
-                        next_td = parent.find_next_sibling('td')
-                        if next_td:
-                            metrics['ProfitFactor'] = next_td.get_text(strip=True)
-
-                # Recovery Factor
-                rf_node = soup.find(string=lambda text: text and "Recovery Factor" in text)
-                if rf_node:
-                    parent = rf_node.find_parent('td')
-                    if parent:
-                        next_td = parent.find_next_sibling('td')
-                        if next_td:
-                            metrics['RecoveryFactor'] = next_td.get_text(strip=True)
-                            
-            except Exception as e:
-                print(f"Warning: Error extracting metrics from {html_file_path}: {e}")
-            
-            return metrics
-
-        def load_all_fx_rates(base_dir):
-            """Loads daily FX closing prices from the prices/ folder."""
-            prices_dir = os.path.join(base_dir, "prices")
-            rates = {}
-            if os.path.exists(prices_dir):
-                files = glob.glob(os.path.join(prices_dir, "*.csv"))
-                for f in files:
-                    s = os.path.splitext(os.path.basename(f))[0].upper()
-                    try:
-                        rdf = pd.read_csv(f)
-                        rdf['Date'] = pd.to_datetime(rdf['Date']).dt.date
-                        rdf.set_index('Date', inplace=True)
-                        rates[s] = rdf
-                    except: pass
-            return rates
-
-        all_fx_rates = load_all_fx_rates(output_dir)
-
-        def get_usd_conv_factor(symbol, target_date, fx_rates):
-            """Calculates conversion factor to USD based on the quote currency."""
-            # Clean symbol (remove suffixes like .m, .pro, etc.)
-            # Assuming standard 6-char pair is at the start
-            clean_symbol = symbol.split('.')[0].split('_')[0]
-            if len(clean_symbol) < 6:
-                # Try to extract first 6 alphas if delimiters failed
-                import re
-                match = re.match(r'^([A-Za-z]{6})', symbol)
-                if match:
-                    clean_symbol = match.group(1)
-                else:
-                    return 1.0
-            
-            clean_symbol = clean_symbol.upper()
-            quote = clean_symbol[3:] # Last 3 chars of the pair (e.g. JPY from USDJPY)
-            
-            if quote == "USD": return 1.0
-            
-            # Pairs to look for: USD{Quote} (e.g. USDJPY) or {Quote}USD (e.g. GBPUSD)
-            s1, s2 = f"USD{quote}", f"{quote}USD"
-            target_d = target_date.date() if hasattr(target_date, 'date') else target_date
-            
-            # Helper to find rate
-            def find_rate(sym_key, invert):
-                if sym_key in fx_rates:
-                    df = fx_rates[sym_key]
-                    try:
-                        # Use get_indexer to find nearest date (method='pad' for forward fill)
-                        idx = df.index.get_indexer([target_d], method='pad')[0]
-                        if idx != -1:
-                            row_val = df.iloc[idx]
-                            # Handle different column names (list.py saves as 'Price', yahoo might return 'Close', 'Adj Close')
-                            if 'Price' in row_val: val = row_val['Price']
-                            elif 'Close' in row_val: val = row_val['Close']
-                            elif 'Adj Close' in row_val: val = row_val['Adj Close']
-                            else: val = row_val.iloc[0] # Fallback to first column
-                            
-                            return 1.0/val if invert else val
-                    except: pass
-                return None
-
-            # Try exact match first
-            r = find_rate(s1, True) # USDGBP -> Invert to get USD value? No.
-            # If pair is USDJPY (Base=USD, Quote=JPY). Price is JPY per USD.
-            # Value in Quote (JPY). To get USD: Divide by Price (USD/JPY).
-            # So if we find USDJPY, we want (1/Rate). Correct. (Invert=True)
-            
-            if r is not None: return r
-            
-            r = find_rate(s2, False) # GBPUSD. Price is USD per GBP.
-            # Value in Quote (GBP). To get USD: Multiply by Price.
-            # So if we find GBPUSD, we want Rate. Correct. (Invert=False)
-            
-            if r is not None: return r
-            
-            # If we are here, we failed to find a rate.
-            # Print a warning once per symbol to avoid spam?
-            # For now, just print to console
-            # print(f"Warning: No FX rate found for {symbol} (Quote: {quote}) on {target_d}. Using 1.0.")
-            return 1.0
 
         if not all_trades_files:
             f.write("<p>No detailed trade files found.</p>\n")
@@ -608,6 +705,11 @@ def main():
                     for atf in all_trades_files:
                         bn = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
                         all_reports_to_show.append({'basename': bn, 'original_filename': bn + ".html", 'full_html_path': None})
+            else:
+                # Fallback if report_list.csv doesn't exist at all
+                for atf in all_trades_files:
+                    bn = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
+                    all_reports_to_show.append({'basename': bn, 'original_filename': bn + ".html", 'full_html_path': None})
             
             for idx, r_info in enumerate(all_reports_to_show, 1):
                 report_basename = r_info['basename']
@@ -1069,13 +1171,19 @@ def main():
                         # Add secondary Y-axis for absolute drawdown
                         ax_dd_abs_plot = ax_dd.twinx()
                         abs_diff = df_pq_filtered['EQUITY'] - df_pq_filtered['Peak']
+                        df_pq_filtered['DD_Abs'] = abs_diff
                         ax_dd_abs_plot.plot(df_pq_filtered['DATE'], abs_diff, alpha=0)
                         ax_dd_abs_plot.set_ylabel('Drawdown Absolute')
                         ax_dd_abs_plot.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
 
                         max_dd_pct = df_pq_filtered['DD_Pct'].min()
-                        max_dd_abs = abs_diff.min()
+                        max_dd_abs = df_pq_filtered['DD_Abs'].min()
                         max_dd_time = df_pq_filtered.iloc[df_pq_filtered['DD_Pct'].argmin()]['DATE']
+
+                        # Collect daily max DD for portfolio aggregation
+                        df_pq_filtered['DateOnlyDD'] = df_pq_filtered['DATE'].dt.date
+                        daily_maxes = df_pq_filtered.groupby('DateOnlyDD')['DD_Abs'].min()
+                        report_daily_max_dds[report_basename] = daily_maxes
 
                     else:
                         df_parquet = None # Revert to fallback if date range filters out everything
@@ -1097,13 +1205,19 @@ def main():
                     # Add secondary Y-axis for absolute drawdown
                     ax_dd_abs_plot = ax_dd.twinx()
                     abs_diff = exits['Balance'] - exits['Peak']
+                    exits['DD_Abs'] = abs_diff
                     ax_dd_abs_plot.plot(exits['Time'], abs_diff, alpha=0)
                     ax_dd_abs_plot.set_ylabel('Drawdown Absolute')
                     ax_dd_abs_plot.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
 
                     max_dd_pct = exits['DD_Pct'].min()
-                    max_dd_abs = abs_diff.min()
+                    max_dd_abs = exits['DD_Abs'].min()
                     max_dd_time = exits.iloc[exits['DD_Pct'].argmin()]['Time']
+
+                    # Collect daily max DD for portfolio aggregation
+                    exits['DateOnlyDD'] = exits['Time'].dt.date
+                    daily_maxes = exits.groupby('DateOnlyDD')['DD_Abs'].min()
+                    report_daily_max_dds[report_basename] = daily_maxes
 
 
                 ax_bal.set_ylabel('Amount')

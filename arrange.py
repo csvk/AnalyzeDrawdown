@@ -53,10 +53,9 @@ def arrange_files():
         shutil.copy2(f, csv_path)
     print(f"Copied {len(parquet_files)} .parquet files to {csv_path}")
 
-    # 5. All *.htm, *_overview.png, *_holding.png, *holding.png, *-hst.png & *-mfemae.png files from /Hunted 
-    #    should be copied to /Hunted/arranged/HTML Reports
+    # 5. Copy all *.htm and ALL *.png files to /Hunted/arranged/HTML Reports
+    #    Additionally, copy "remaining" *.png files (not matching standard report patterns) to /Hunted/arranged/Graphs
     html_patterns = [
-        "*.htm",
         "*_overview.png",
         "*_holding.png",
         "*holding.png",
@@ -64,22 +63,19 @@ def arrange_files():
         "*-mfemae.png"
     ]
     
-    html_file_list = []
-    for pattern in html_patterns:
-        html_file_list.extend(glob.glob(os.path.join(hunted_path, pattern)))
-    
-    # Use a set to avoid duplicates if patterns overlap
-    html_file_list = list(set(html_file_list))
-    
-    for f in html_file_list:
-        shutil.copy2(f, html_reports_path)
-    print(f"Copied {len(html_file_list)} files to {html_reports_path}")
-
-    # 6. All remaining *.png files from /Hunted should be copied to /Hunted/arranged/Graphs
     all_pngs = set(glob.glob(os.path.join(hunted_path, "*.png")))
-    moved_pngs = set(html_file_list) # Actually these are the ones copied to HTML Reports
-    remaining_pngs = all_pngs - moved_pngs
+    specific_pngs = set()
+    for pattern in html_patterns:
+        specific_pngs.update(glob.glob(os.path.join(hunted_path, pattern)))
+    
+    # All .htm and all .png to HTML Reports
+    html_files = glob.glob(os.path.join(hunted_path, "*.htm")) + list(all_pngs)
+    for f in html_files:
+        shutil.copy2(f, html_reports_path)
+    print(f"Copied {len(html_files)} files (.htm and all .png) to {html_reports_path}")
 
+    # 6. Copy remaining *.png files to Graphs
+    remaining_pngs = all_pngs - specific_pngs
     for f in remaining_pngs:
         shutil.copy2(f, graphs_path)
     print(f"Copied {len(remaining_pngs)} remaining .png files to {graphs_path}")

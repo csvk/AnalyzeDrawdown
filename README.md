@@ -3,13 +3,14 @@
 This project provides a 3-step workflow to analyze trading reports. Each analysis run is contained within a dedicated timestamped folder for better organization.
 
 ## Project Structure
-- `arrange.py`: (Step 0) Organizes a mess of files in a `Hunted/` folder into a structured `Hunted/arranged/` directory. This creates the parent directory used by subsequent scripts.
+- `arrange.py`: (Step 0) Organizes files in a `Hunted/` folder into a structured `Hunted/arranged/` directory (HTML Reports, CSV). This creates the parent directory used by subsequent scripts.
 - `list.py`: Scans a report folder and creates a new `analysis/output_<timestamp>/` directory containing the report list and a `sets/` folder.
 - `trades.py`: Processes the reports from Step 1 and saves non-overlapping trades into the same output folder.
 - `analyze.py`: Generates charts and a final markdown report inside the same output folder, sourcing parameters from the `sets/` folder.
 - `simulate.py`: Parses the analysis results to create a simplified lot-scaling simulation summary (`sim.html`).
 - `dd.py`: (Utility) Theoretical Drawdown Calculator for analyzing specific reports/days with sensitivity overrides and comparison against mean pip gaps.
 - `export.py`: (Optional) Extracts and organizes key files (`.set`, `.htm`, `.parquet`) for reports identified in the final analysis.
+- `ldsets.py`: (Utility) Creates `LiveDelay` variations of set files based on "Max Trades in Sequence" results.
 - `sets2csv.py`: (Utility) Converts a folder of `.set` or `.chr` files into a single `all_sets_<ext>_<timestamp>.csv` with all parameters.
 
 ## Expected Directory Structure
@@ -20,6 +21,8 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 ├── HTML Reports/
 │   ├── File1.htm
 │   └── File2.htm
+├── Graphs/
+│   └── (remaining .png files)
 ├── analysis/
 │   └── output_20231223_120000/        <-- Created in Step 1
 │       ├── report_list.csv
@@ -29,6 +32,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       ├── sim.html                   <-- Created in Step 5
 │       ├── charts/                    <-- Created in Step 3
 │       ├── sets/                      <-- Created in Step 1 (Copy of *.set)
+│       ├── ldsets/                    <-- Created by ldsets.py
 │       ├── Trades/                    <-- Created in Step 2
 │       │   ├── all_trades_File1.csv
 │       │   ├── selected_trades_SymbolA.csv
@@ -53,6 +57,8 @@ Organize a raw `Hunted/` folder into a structured format. This script creates th
 python arrange.py "C:/Path/To/DirectoryContainingHunted"
 ```
 *   **Output**: Creates `Hunted/arranged/` with subfolders `HTML Reports`, `CSV`, and `Graphs`.
+    *   All `.htm` and `.png` files are copied to `HTML Reports`.
+    *   Remaining `.png` files (those not for strategy reports) are additionally copied to `Graphs`.
 *   **Next Step**: Use the newly created `arranged` folder path as the input for `list.py`.
 
 ### Step 1: Initialize Analysis
@@ -109,6 +115,15 @@ python sets2csv.py "C:/Path/To/Your/Sets"
 *   **Auto-Detection**: The script automatically detects the file type in the folder.
 *   **Constraint**: The folder must contain only one type of file (`.set` OR `.chr`).
 *   **Output**: Generates `all_sets_set_YYYYMMDD_HHMMSS.csv` or `all_sets_chr_YYYYMMDD_HHMMSS.csv` within the same directory.
+
+### LiveDelay Variations (`ldsets.py`)
+Generates variations of set files with incremental `LiveDelay` values for strategies that reached high sequence levels.
+```bash
+python ldsets.py "C:/Path/To/analysis/output_folder"
+```
+*   **Threshold**: Only creates variations if "Max Trades in Sequence" > 4.
+*   **Logic**: Creates `floor(Max Trades / 2)` variations (e.g., if Max Trades is 7, creates ld1, ld2, and ld3).
+*   **Output**: Saves new `.set` files in an `ldsets/` subfolder.
 
 ### Theoretical Drawdown Calculator (`dd.py`)
 Provides a detailed console-based sensitivity analysis for individual reports.
