@@ -4,6 +4,7 @@ import pandas as pd
 import argparse
 import webbrowser
 from pathlib import Path
+from bs4 import BeautifulSoup
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Compare strategy variations from Short_Analysis.html')
@@ -48,11 +49,56 @@ def extract_metrics(html_content):
         results.append({
             'Base': base_name,
             'Variant': variant,
+            'FullReportName': report_name,
             **metrics
         })
     return results
 
-def generate_report(results, output_file):
+def get_selected_reports(output_dir):
+    """Parse Full_Analysis.html to find which reports are in the Monthly Contributor Breakdown."""
+    full_analysis_path = os.path.join(output_dir, "Full_Analysis.html")
+    if not os.path.exists(full_analysis_path):
+        return set()
+
+    try:
+        with open(full_analysis_path, 'r', encoding='utf-8') as f:
+            soup = BeautifulSoup(f.read(), 'html.parser')
+        
+        # Look for the Monthly Contributor Breakdown header
+        header = soup.find(['h2', 'h3'], string=lambda t: t and 'Monthly Contributor Breakdown' in t)
+        if not header:
+            header = soup.find(lambda tag: tag.name in ['h2', 'h3'] and 'Monthly Contributor Breakdown' in tag.get_text())
+        
+        if not header:
+            return set()
+
+        table = header.find_next('table')
+        if not table:
+            return set()
+
+        selected = set()
+        rows = table.find_all('tr')[1:] # Skip header row
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) < 3: continue
+            
+            # The filename is in the 3rd column (index 2)
+            report_file_td = cols[2]
+            code_tag = report_file_td.find('code')
+            if code_tag:
+                name = code_tag.get_text(strip=True)
+                # Remove .htm or .html extension for matching
+                base_name = os.path.splitext(name)[0]
+                selected.add(base_name)
+        return selected
+    except Exception as e:
+        print(f"Warning: Could not parse Full_Analysis.html for selected reports: {e}")
+        return set()
+
+def generate_report(results, output_file, selected_reports=None):
+    if selected_reports is None:
+        selected_reports = set()
+    
     df = pd.DataFrame(results)
     
     # Identify strategies with variants
@@ -78,11 +124,20 @@ def generate_report(results, output_file):
         row = {'Base Strategy': base}
         for _, item in group.iterrows():
             var = item['Variant']
-            metrics_str = f"PnL: {item.get('Total PnL', 'N/A')}<br>" \
+            full_name = item.get('FullReportName', '')
+            
+            # Check if this variation is "selected"
+            is_selected = full_name in selected_reports
+            marker = " <span class='selected-marker'>*</span>" if is_selected else ""
+            bold_style = " style='font-weight: bold;'" if is_selected else ""
+            
+            metrics_str = f"<div class='metric-block'{bold_style}>" \
+                          f"PnL: {item.get('Total PnL', 'N/A')}{marker}<br>" \
                           f"DD: {item.get('Max Drawdown', 'N/A')}<br>" \
                           f"RF: {item.get('Recovery Factor', 'N/A')}<br>" \
                           f"MaxT: {item.get('Max Trades in Sequence', 'N/A')}<br>" \
-                          f"B/S: {item.get('Buy Trades', 'N/A')}/{item.get('Sell Trades', 'N/A')}"
+                          f"B/S: {item.get('Buy Trades', 'N/A')}/{item.get('Sell Trades', 'N/A')}" \
+                          f"</div>"
             row[var] = metrics_str
         output_rows.append(row)
     
@@ -107,6 +162,7 @@ def generate_report(results, output_file):
         tr:hover {{ background-color: #f1f1f1; }}
         .base-name {{ font-weight: bold; color: #2980b9; }}
         .metric-block {{ line-height: 1.6; font-size: 0.9em; }}
+        .selected-marker {{ color: #e74c3c; font-weight: bold; font-size: 1.2em; }}
     </style>
 </head>
 <body>
@@ -139,8 +195,12 @@ def main():
         print("No metrics found in the report.")
         return
 
+    selected_reports = get_selected_reports(output_dir)
+    if selected_reports:
+        print(f"Found {len(selected_reports)} selected variations in Full_Analysis.html")
+
     output_file = os.path.join(output_dir, 'compare_report.html')
-    if generate_report(results, output_file):
+    if generate_report(results, output_file, selected_reports):
         webbrowser.open(f"file:///{output_file}")
 
 if __name__ == "__main__":
