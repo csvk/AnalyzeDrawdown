@@ -8,6 +8,7 @@ import glob
 def export_files():
     parser = argparse.ArgumentParser(description='Export and organize files based on Full_Analysis.html report.')
     parser.add_argument('output_folder', type=str, help='Path to the output folder containing Full_Analysis.html and report_list.csv')
+    parser.add_argument('magic_start', type=int, help='Starting magic number for the exported sets')
     args = parser.parse_args()
 
     output_dir = os.path.abspath(args.output_folder)
@@ -21,10 +22,10 @@ def export_files():
         print(f"Error: report_list.csv not found in {output_dir}")
         return
 
-    # 1. Refresh 'selected' folder inside output_dir
-    selected_dir = os.path.join(output_dir, "selected")
+    # 1. Refresh 'export' folder inside output_dir
+    selected_dir = os.path.join(output_dir, "export")
     if os.path.exists(selected_dir):
-        print(f"Refreshing 'selected' folder: {selected_dir}")
+        print(f"Refreshing 'export' folder: {selected_dir}")
         shutil.rmtree(selected_dir)
     os.makedirs(selected_dir, exist_ok=True)
 
@@ -70,6 +71,28 @@ def export_files():
     selected_files = []
     seen = set()
     
+    # Extract Max Trades in Sequence mapping
+    max_trades_map = {}
+    for h3 in soup.find_all('h3'):
+        h3_text = h3.get_text()
+        if "Report:" in h3_text:
+            # Extract filename from <code> tag inside h3 if it exists, or from link
+            name_tag = h3.find('code')
+            if not name_tag:
+                name_tag = h3.find('a')
+            
+            if name_tag:
+                name = name_tag.get_text(strip=True)
+                # Use base name for mapping key to avoid extension mismatch
+                name_base = os.path.splitext(name)[0]
+                ul = h3.find_next_sibling('ul', class_='metrics-list')
+                if ul:
+                    mt_li = ul.find(lambda tag: tag.name == 'li' and 'Max Trades in Sequence' in tag.get_text())
+                    if mt_li:
+                        val_text = mt_li.get_text().split(':')[-1].strip()
+                        val = val_text.split('[')[0].strip()
+                        max_trades_map[name_base] = val
+
     rows = table.find_all('tr')[1:] # Skip header row
     for row in rows:
         cols = row.find_all('td')
@@ -98,7 +121,7 @@ def export_files():
 
     # 5. Copy and modify files
     sets_in_dir = os.path.join(output_dir, "sets")
-    magic_counter = 1
+    magic_counter = args.magic_start
     
     for file_name in selected_files:
         original_htm_path = path_map[file_name]
@@ -124,18 +147,43 @@ def export_files():
                 print(f"  Error: Could not decode {set_file_name} with supported encodings.")
                 continue
 
+            # Update Magic Number
             # The format is MAGIC_NUMBER=1||777||1||7770||N
             # We want to replace the first number (before the first ||)
             pattern = r'(MAGIC_NUMBER=)(\d+)(\|\|.*)'
             new_content = re.sub(pattern, rf'\g<1>{magic_counter}\g<3>', content)
             
-            # Write back in UTF-8 for consistency or keep original? 
-            # Usually UTF-8 is safer for modern tools, but MT might expect what it had.
-            # Let's write in UTF-8 as it's more universal and shouldn't break MT.
+            # Process TradeComment
+            def modify_comment(match):
+                prefix = match.group(1) # 'TradeComment='
+                val = match.group(2)    # 'range_ema_adx_bb_gbpcad_1_10707'
+                suffix = match.group(3) or "" # '||0||...'
+                parts = val.split('_')
+                if len(parts) >= 4:
+                    first_part = parts[0]
+                    # Logic: currency is 3rd word from the end.
+                    # index: len-3
+                    # Keep everything from there onwards.
+                    currency_index = len(parts) - 3
+                    new_val = first_part + "_" + "_".join(parts[currency_index:])
+                    
+                    # Add Max Trades Suffix
+                    # Use base_name which is already defined as os.path.splitext(file_name)[0]
+                    max_val = max_trades_map.get(base_name, "N/A")
+                    new_val += f"_Max{max_val}"
+                    
+                    return f"{prefix}{new_val}{suffix}"
+                return match.group(0)
+
+            # Use MULTILINE and restrict to single line to avoid matching across lines
+            comment_pattern = r'^(TradeComment=)([^|\r\n]+)(\|\|.*)?$'
+            new_content = re.sub(comment_pattern, modify_comment, new_content, flags=re.MULTILINE)
+            
+            # Write back in UTF-8
             with open(set_out_path, 'w', encoding='utf-8') as f:
                 f.write(new_content)
                 
-            print(f"  Processed: {set_file_name} -> selected/sets/ (Magic Number: {magic_counter})")
+            print(f"  Processed: {set_file_name} -> export/sets/ (Magic Number: {magic_counter}, Max Trades: {max_trades_map.get(file_name, 'N/A')})")
             magic_counter += 1
         else:
             print(f"  Warning: .set file not found: {set_in_path}")
@@ -143,7 +191,7 @@ def export_files():
         # b. Copy .htm file to HTML/
         if os.path.exists(original_htm_path):
             shutil.copy2(original_htm_path, html_out_dir)
-            print(f"  Copied: {file_name} -> selected/HTML/")
+            print(f"  Copied: {file_name} -> export/HTML/")
         else:
             print(f"  Warning: .htm file not found: {original_htm_path}")
 
@@ -157,7 +205,7 @@ def export_files():
             if matches:
                 for match in matches:
                     shutil.copy2(match, csv_out_dir)
-                    print(f"  Copied: {os.path.basename(match)} -> selected/CSV/")
+                    print(f"  Copied: {os.path.basename(match)} -> export/CSV/")
             else:
                 print(f"  Info: No parquet found for {base_name}")
         else:

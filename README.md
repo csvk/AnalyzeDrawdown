@@ -39,7 +39,7 @@ This project provides a 3-step workflow to analyze trading reports. Each analysi
 │       │   ├── all_trades_File1.csv
 │       │   ├── selected_trades_SymbolA.csv
 │       │   └── selected_trades_SymbolB.csv
-│       └── selected/                  <-- Created in Step 4
+│       └── export/                    <-- Created in Step 4
 │           ├── sets/                  <-- Incremental magic numbers
 │           │   └── File1.set
 │           ├── HTML/
@@ -91,9 +91,9 @@ python analyze.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
 ### Step 4: Selective Export (Optional)
 Extract and organize relevant files for a focused review of the contributors.
 ```bash
-python export.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS"
+python export.py "C:/Path/To/ParentFolder/analysis/output_YYYYMMDD_HHMMSS" <magic_start>
 ```
-*   **Output**: Creates a `selected/` folder **inside** your output directory with `CSV`, `HTML`, and `sets` subfolders. Each `.set` file is assigned a unique, incremental magic number.
+*   **Output**: Creates an `export/` folder **inside** your output directory with `CSV`, `HTML`, and `sets` subfolders. Each `.set` file is assigned a unique, incremental magic number starting from `<magic_start>`.
  
 ### Step 5: Simulation Summary
 Generates a consolidated summary report (`sim.html`) showing simulated performance across various fixed lot sizes (0.01 to 0.05).

@@ -732,7 +732,7 @@ def main():
                 for atf in all_trades_files:
                     bn = os.path.basename(atf).replace("all_trades_", "").replace(".csv", "")
                     all_reports_to_show.append({'basename': bn, 'original_filename': bn + ".html", 'full_html_path': None})
-            
+            short_idx = 1
             for idx, r_info in enumerate(all_reports_to_show, 1):
                 report_basename = r_info['basename']
                 original_filename = r_info['original_filename']
@@ -757,8 +757,11 @@ def main():
                 atf = os.path.join(trades_folder, f"all_trades_{report_basename}.csv")
                 
                 if not os.path.exists(atf):
-                    f.write(f"<h3>{idx}. Report: {report_basename}</h3>\n")
-                    f.write(f"<p>- <strong>Status</strong>: <span class='status-skipped'>Skipped</span> (File could not be parsed or has no trades)</p>\n\n")
+                    f.write(f"<h3>{idx}. Report: {report_basename}</h3>\n", short=False)
+                    if original_filename in included_files:
+                        f.write(f"<h3>{short_idx}. Report: {report_basename}</h3>\n", full=False)
+                        short_idx += 1
+                    f.write(f"<p>- <strong>Status</strong>: <span class='status-skipped'>Skipped</span> (File could not be parsed or has no trades)</p>\n\n", short=(original_filename in included_files))
                     continue
 
                 df_at = pd.read_csv(atf)
@@ -1582,90 +1585,93 @@ def main():
                 # Try to get absolute path for hyperlink
                 h_link = f"<a href='file:///{full_html_path}' target='_blank'>{report_basename}</a>" if full_html_path else report_basename
                 
-                f.write(f"<h3>{idx}. Report: {h_link}</h3>\n")
+                f.write(f"<h3>{idx}. Report: {h_link}</h3>\n", short=False)
+                if status == "Included":
+                    f.write(f"<h3>{short_idx}. Report: {h_link}</h3>\n", full=False)
+                    short_idx += 1
                 # Start 2-column metrics list
-                f.write(f"<ul class='metrics-list'>\n")
+                f.write(f"<ul class='metrics-list'>\n", short=(status == "Included"))
                 
                 # 1. Status
-                f.write(f"<li><strong>Status</strong>: <span class='{status_class}'>{status}</span> {'(' + reason + ')' if reason else ''}</li>\n")
+                f.write(f"<li><strong>Status</strong>: <span class='{status_class}'>{status}</span> {'(' + reason + ')' if reason else ''}</li>\n", short=(status == "Included"))
                 
                 if total_pnl is not None:
                     # 2. Data Source (moved up to be 2nd)
                     data_source_str = "Parquet (Balance & Equity)" if df_parquet is not None else "HTML Trade Data (Approximated)"
-                    f.write(f"<li><strong>Data Source</strong>: {data_source_str}</li>\n")
+                    f.write(f"<li><strong>Data Source</strong>: {data_source_str}</li>\n", short=(status == "Included"))
 
                     # 3. Total PnL
-                    f.write(f"<li><strong>Total PnL</strong>: {total_pnl:,.2f}</li>\n")
+                    f.write(f"<li><strong>Total PnL</strong>: {total_pnl:,.2f}</li>\n", short=(status == "Included"))
                     
                     # 4. Selected PnL
                     selected_pnl_val = 0.0
                     if not df_deals.empty and original_filename in df_deals['SourceFile'].values:
                         selected_pnl_val = df_deals[df_deals['SourceFile'] == original_filename]['DealPnL'].sum()
-                    f.write(f"<li><strong>Selected PnL</strong>: {selected_pnl_val:,.2f}</li>\n")
+                    f.write(f"<li><strong>Selected PnL</strong>: {selected_pnl_val:,.2f}</li>\n", short=(status == "Included"))
                     
                     # 5. Profit Factor
-                    f.write(f"<li><strong>Profit Factor</strong>: {report_metrics.get('ProfitFactor', 'N/A')}</li>\n")
+                    f.write(f"<li><strong>Profit Factor</strong>: {report_metrics.get('ProfitFactor', 'N/A')}</li>\n", short=(status == "Included"))
                     
                     # 6. Recovery Factor
-                    f.write(f"<li><strong>Recovery Factor</strong>: {report_metrics.get('RecoveryFactor', 'N/A')}</li>\n")
+                    f.write(f"<li><strong>Recovery Factor</strong>: {report_metrics.get('RecoveryFactor', 'N/A')}</li>\n", short=(status == "Included"))
 
                     # 7. Max Drawdown
                     if max_dd_abs is not None:
-                        f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%) [{max_dd_time}]</li>\n")
+                        f.write(f"<li><strong>Max Drawdown</strong>: {max_dd_abs:,.2f} ({max_dd_pct:.2f}%) [{max_dd_time}]</li>\n", short=(status == "Included"))
 
                     # 8. Max Trades in Sequence
                     if 'max_trades_val' in locals() and max_trades_val is not None:
                         date_str = f" [{max_trades_date}]" if 'max_trades_date' in locals() and max_trades_date else ""
-                        f.write(f"<li><strong>Max Trades in Sequence</strong>: {max_trades_val}{date_str}</li>\n")
+                        f.write(f"<li><strong>Max Trades in Sequence</strong>: {max_trades_val}{date_str}</li>\n", short=(status == "Included"))
                     
                     # 9. Pip Gap at Max Trades
                     if 'max_trades_gap' in locals() and max_trades_gap is not None:
-                        f.write(f"<li><strong>Pip Gap at Max Trades</strong>: {max_trades_gap:.1f}</li>\n")
+                        f.write(f"<li><strong>Pip Gap at Max Trades</strong>: {max_trades_gap:.1f}</li>\n", short=(status == "Included"))
 
                     # 10. Buy/Sell Counts
-                    f.write(f"<li><strong>Buy Trades</strong>: {total_buy_trades}</li>\n")
-                    f.write(f"<li><strong>Sell Trades</strong>: {total_sell_trades}</li>\n")
+                    f.write(f"<li><strong>Buy Trades</strong>: {total_buy_trades}</li>\n", short=(status == "Included"))
+                    f.write(f"<li><strong>Sell Trades</strong>: {total_sell_trades}</li>\n", short=(status == "Included"))
 
                 
-                f.write("</ul>\n")
+                f.write("</ul>\n", short=(status == "Included"))
                 
                 # Parameters & Validation in a standard list or its own section
                 if total_pnl is not None:
-                    f.write("<ul>\n") # Start standard list for the rest (Parameters, Discrepancies)
-                    f.write("<li><strong>Parameters & Validation</strong>:\n")
-                    f.write("<ul class='params-list'>\n")
+                    f.write("<ul>\n", short=(status == "Included")) # Start standard list for the rest (Parameters, Discrepancies)
+                    f.write("<li><strong>Parameters & Validation</strong>:\n", short=(status == "Included"))
+                    f.write("<ul class='params-list'>\n", short=(status == "Included"))
                     if set_params:
-                        f.write(f"<li>Lot Size: <code>{set_params['LotSize']}</code></li>\n")
-                        f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n")
-                        f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n")
-                        f.write(f"<li>Max Orders: <code>{set_params['MaxOrders']}</code></li>\n")
-                        f.write(f"<li>Pip Step: <code>{set_params['PipStep']}</code></li>\n")
-                        f.write(f"<li>Pip Step Exponent: <code>{set_params['PipStepExponent']}</code></li>\n")
-                        f.write(f"<li>Max Pip Step: <code>{set_params['MaxPipStep']}</code></li>\n") # Added MaxPipStep
-                        f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n")
-                        f.write(f"<li>Live Delay: <code>{set_params['LiveDelay']}</code></li>\n")
+                        f.write(f"<li>Lot Size: <code>{set_params['LotSize']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Max Lots: <code>{set_params['MaxLots']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Lot Size Exponent: <code>{set_params['LotSizeExponent']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Max Orders: <code>{set_params['MaxOrders']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Pip Step: <code>{set_params['PipStep']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Pip Step Exponent: <code>{set_params['PipStepExponent']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Max Pip Step: <code>{set_params['MaxPipStep']}</code></li>\n", short=(status == "Included")) # Added MaxPipStep
+                        f.write(f"<li>Delay Trade Sequence: <code>{set_params['DelayTradeSequence']}</code></li>\n", short=(status == "Included"))
+                        f.write(f"<li>Live Delay: <code>{set_params['LiveDelay']}</code></li>\n", short=(status == "Included"))
                     
                     if 'detected_point' in locals() and detected_point is not None:
-                        f.write(f"<li>Point Used: <code>{detected_point}</code></li>\n")
+                        f.write(f"<li>Point Used: <code>{detected_point}</code></li>\n", short=(status == "Included"))
                     
-                    f.write(f"<li>Initial LotSize (Report): <code>{initial_lot_size}</code></li>\n")
-                    f.write(f"<li>Max Grid Level Reached: <code>{max_grid_level}</code></li>\n")
+                    f.write(f"<li>Initial LotSize (Report): <code>{initial_lot_size}</code></li>\n", short=(status == "Included"))
+                    f.write(f"<li>Max Grid Level Reached: <code>{max_grid_level}</code></li>\n", short=(status == "Included"))
                     
                     val_color = "black"
                     if lot_validation_status == "OK": val_color = "green"
                     elif "Discrepancy" in str(lot_validation_status): val_color = "red"
                     
-                    f.write(f"<li>Lot Validation: <b style='color:{val_color};'>{lot_validation_status}</b></li>\n")
-                    f.write("</ul></li>\n")
+                    f.write(f"<li>Lot Validation: <b style='color:{val_color};'>{lot_validation_status}</b></li>\n", short=(status == "Included"))
+                    f.write("</ul></li>\n", short=(status == "Included"))
                     
                     if top_3_discrepancies:
-                        f.write("<li><strong>Top 3 Lot Discrepancies</strong>:\n")
-                        f.write("<table style='width: auto; margin: 10px 0;'>\n")
-                        f.write("<thead><tr><th>Trade #</th><th>Entry Time</th><th>Theo Lot</th><th>Actual Lot</th><th>Diff</th></tr></thead>\n")
-                        f.write("<tbody>\n")
+                        f.write("<li><strong>Top 3 Lot Discrepancies</strong>:\n", short=(status == "Included"))
+                        f.write("<table style='width: auto; margin: 10px 0;'>\n", short=(status == "Included"))
+                        f.write("<thead><tr><th>Trade #</th><th>Entry Time</th><th>Theo Lot</th><th>Actual Lot</th><th>Diff</th></tr></thead>\n", short=(status == "Included"))
+                        f.write("<tbody>\n", short=(status == "Included"))
                         for d in top_3_discrepancies:
-                            f.write(f"<tr><td>{d['TradeNo']}</td><td>{d['Time']}</td><td>{d['Theo']:.2f}</td><td>{d['Act']:.2f}</td><td>{d['Diff']:.2f}</td></tr>\n")
-                        f.write("</tbody></table></li>\n")
+                            f.write(f"<tr><td>{d['TradeNo']}</td><td>{d['Time']}</td><td>{d['Theo']:.2f}</td><td>{d['Act']:.2f}</td><td>{d['Diff']:.2f}</td></tr>\n", short=(status == "Included"))
+                        f.write("</tbody></table></li>\n", short=(status == "Included"))
                     
                     if theoretical_dd_series:
                         # Select top 2 highest distinct PipStepUsed
@@ -1688,56 +1694,15 @@ def main():
                             # Keep it sorted by PipStepUsed descending
                             combined_distinct = combined_distinct.sort_values('PipStepUsed', ascending=False)
 
-                            # Titles for both
-                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n", short=False)
-                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (1k Threshold Only)</strong>:\n", full=False)
-
-                            f.write("<div style='overflow-x: auto;'>\n")
-                            
-                            # Full Report Table Start
-                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n", short=False)
-                            
-                            # Short Report Table Start
-                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 12px; border-collapse: collapse; border: 1px solid #ddd;'>\n", full=False)
-                            f.write("<thead><tr style='background-color: #f2f2f2;'>", full=False)
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Type</th>", full=False)
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Date</th>", full=False)
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Base Pip Gap</th>", full=False)
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>USD Conv Factor</th>", full=False)
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Trade</th>", full=False)
-                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Pip Gap</th>", full=False)
-                            f.write("</tr></thead>\n<tbody>\n", full=False)
-
-                            # Prepare scenario rows
+                            # Prepare scenario rows with breach calculations
                             scenario_rows = []
                             for _, d_row in combined_distinct.iterrows():
                                 is_max = d_row['PipStepUsed'] in top_distinct['PipStepUsed'].values
                                 prefix = "Max Distinct Gap" if is_max else "Min Distinct Gap"
-                                scenario_rows.append({
-                                    'Type': prefix,
-                                    'Date': d_row['Time'].date(),
-                                    'BasePipGap': f"{d_row['PipStepUsed']:.2f}",
-                                    'FXFactor': f"{d_row['FX_Factor']:.4f}",
-                                    'Label': f"{prefix} | Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
-                                    'Data': d_row
-                                })
-                            
-                            if 'mean_gap_scenario' in locals() and mean_gap_scenario:
-                                scenario_rows.append({
-                                    'Type': "Mean Pip Gap (Max DD Day)",
-                                    'Date': max_gap_day.date() if max_gap_day else "N/A",
-                                    'BasePipGap': f"{global_avg_gap:.2f}",
-                                    'FXFactor': f"{max_gap_fx_factor:.4f}",
-                                    'Label': f"Scenario: Mean Pip Gap on Max DD Day ({max_gap_day.date() if max_gap_day else 'N/A'}) | Base Pip Gap: {global_avg_gap:.2f} | USD Conv Factor: {max_gap_fx_factor:.4f}",
-                                    'Data': mean_gap_scenario
-                                })
-
-                            for s_row in scenario_rows:
-                                d_row = s_row['Data']
                                 
                                 # Find breach level
-                                breach_idx = -1
-                                k1_gap_val_str = "N/A"
+                                b_idx = -1
+                                k1_v_str = "N/A"
                                 try:
                                     last_dd = 0
                                     last_gap = 0
@@ -1745,35 +1710,115 @@ def main():
                                         curr_dd = d_row.get(f'DD{b}', 0)
                                         curr_gap = d_row.get(f'Gap{b}', 0)
                                         if last_dd < 1000 <= curr_dd:
-                                            breach_idx = b
+                                            b_idx = b
                                             if curr_dd > last_dd:
                                                 k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
-                                                k1_gap_val_str = f"{k1_v:,.1f}"
+                                                k1_v_str = f"{k1_v:,.1f}"
                                             break
                                         last_dd = curr_dd
                                         last_gap = curr_gap
                                 except: pass
 
-                                # Full Report: Tables per scenario
+                                scenario_rows.append({
+                                    'Type': prefix,
+                                    'Date': d_row['Time'].date(),
+                                    'BasePipGap': f"{d_row['PipStepUsed']:.2f}",
+                                    'FXFactor': f"{d_row['FX_Factor']:.4f}",
+                                    'Label': f"{prefix} | Date: {d_row['Time'].date()} | Base Pip Gap: {d_row['PipStepUsed']:.2f} | USD Conv Factor: {d_row['FX_Factor']:.4f}",
+                                    'Data': d_row,
+                                    'BreachIdx': b_idx,
+                                    'K1Gap': k1_v_str
+                                })
+                            
+                            if 'mean_gap_scenario' in locals() and mean_gap_scenario:
+                                # Find breach for mean gap
+                                b_idx = -1
+                                k1_v_str = "N/A"
+                                try:
+                                    last_dd = 0
+                                    last_gap = 0
+                                    for b in range(1, 21):
+                                        curr_dd = mean_gap_scenario.get(f'DD{b}', 0)
+                                        curr_gap = mean_gap_scenario.get(f'Gap{b}', 0)
+                                        if last_dd < 1000 <= curr_dd:
+                                            b_idx = b
+                                            if curr_dd > last_dd:
+                                                k1_v = last_gap + (curr_gap - last_gap) * (1000 - last_dd) / (curr_dd - last_dd)
+                                                k1_v_str = f"{k1_v:,.1f}"
+                                            break
+                                        last_dd = curr_dd
+                                        last_gap = curr_gap
+                                except: pass
+
+                                scenario_rows.append({
+                                    'Type': "Mean Pip Gap (Max DD Day)",
+                                    'Date': max_gap_day.date() if max_gap_day else "N/A",
+                                    'BasePipGap': f"{global_avg_gap:.2f}",
+                                    'FXFactor': f"{max_gap_fx_factor:.4f}",
+                                    'Label': f"Scenario: Mean Pip Gap on Max DD Day ({max_gap_day.date() if max_gap_day else 'N/A'}) | Base Pip Gap: {global_avg_gap:.2f} | USD Conv Factor: {max_gap_fx_factor:.4f}",
+                                    'Data': mean_gap_scenario,
+                                    'BreachIdx': b_idx,
+                                    'K1Gap': k1_v_str
+                                })
+
+                            # --- 1. SUMMARY TABLE (Full & Short) ---
+                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (1k Threshold Only)</strong>:\n", short=(status == "Included"))
+                            f.write("<div style='overflow-x: auto;'>\n", short=(status == "Included"))
+                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 12px; border-collapse: collapse; border: 1px solid #ddd;'>\n", short=(status == "Included"))
+                            f.write("<thead><tr style='background-color: #f2f2f2;'>", short=(status == "Included"))
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Type</th>", short=(status == "Included"))
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: left;'>Date</th>", short=(status == "Included"))
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Base Pip Gap</th>", short=(status == "Included"))
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>USD Conv Factor</th>", short=(status == "Included"))
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Trade</th>", short=(status == "Included"))
+                            f.write("<th style='padding: 8px; border: 1px solid #ddd; text-align: center;'>Pip Gap</th>", short=(status == "Included"))
+                            f.write("</tr></thead>\n<tbody>\n", short=(status == "Included"))
+
+                            for s in scenario_rows:
+                                b_str = f"L{s['BreachIdx']}-L{s['BreachIdx']+1}" if s['BreachIdx'] != -1 else "N/A"
+                                f.write("<tr>", short=(status == "Included"))
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s['Type']}</td>", short=(status == "Included"))
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s['Date']}</td>", short=(status == "Included"))
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s['BasePipGap']}</td>", short=(status == "Included"))
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s['FXFactor']}</td>", short=(status == "Included"))
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{b_str}</td>", short=(status == "Included"))
+                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: red;'>{s['K1Gap']}</td>", short=(status == "Included"))
+                                f.write("</tr>\n", short=(status == "Included"))
+                            
+                            f.write("</tbody></table></div></li>\n", short=(status == "Included"))
+
+                            # --- 2. DETAILED TABLES (Full Report Only) ---
+                            f.write(f"<li><strong>Theoretical Max DD Summary in USD (Max 2 & Min 2 Distinct Pip Gaps)</strong>:\n", short=False)
+                            f.write("<div style='overflow-x: auto;'>\n", short=False)
+                            f.write("<table style='width: 100%; margin: 10px 0; font-size: 10px; border-collapse: collapse;'>\n", short=False)
+                            
+                            for s in scenario_rows:
+                                d_row = s['Data']
+                                b_idx = s['BreachIdx']
+                                k1_v_str = s['K1Gap']
+                                
+                                # Determine dynamic colspan (Header + 20 levels + 1 breach column if exists)
+                                current_colspan = 21 + (1 if b_idx != -1 else 0)
+
                                 f.write("<thead>\n", short=False)
-                                f.write(f"<tr style='background-color: #f2f2f2;'><th colspan='25' style='padding: 4px; text-align: left;'><b>{s_row['Label']}</b></th></tr>\n", short=False)
+                                f.write(f"<tr style='background-color: #f2f2f2;'><th colspan='{current_colspan}' style='padding: 4px; text-align: left;'><b>{s['Label']}</b></th></tr>\n", short=False)
                                 f.write("<tr><th style='padding: 2px;'>Header</th>", short=False)
                                 for b in range(1, 21):
-                                    if b == breach_idx:
+                                    if b == b_idx:
                                         f.write("<th style='padding: 2px; color: red;'>Threshold: $1,000</th>", short=False)
                                     f.write(f"<th style='padding: 2px;'>L{b}</th>", short=False)
                                 f.write("</tr>\n</thead>\n<tbody>\n", short=False)
 
                                 f.write("<tr><td style='padding: 2px;'><b>Lot / Gap</b></td>", short=False)
                                 for b in range(1, 21):
-                                    if b == breach_idx:
-                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>{k1_gap_val_str}</td>", short=False)
+                                    if b == b_idx:
+                                        f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>{k1_v_str}</td>", short=False)
                                     f.write(f"<td style='padding: 2px;'>{d_row.get(f'Lot{b}', 0):.2f} / {d_row.get(f'Gap{b}', 0):,.0f}</td>", short=False)
                                 f.write("</tr>\n", short=False)
                                 
                                 f.write("<tr><td style='padding: 2px;'><b>DD (USD)</b></td>", short=False)
                                 for b in range(1, 21):
-                                    if b == breach_idx:
+                                    if b == b_idx:
                                         f.write(f"<td style='padding: 2px; border: 2px solid red; color: red; font-weight: bold; text-align: center;'>$1,000</td>", short=False)
                                     dd_val = d_row.get(f'DD{b}', 0)
                                     style = f"padding: 2px; color: {'red' if dd_val >= 1000 else 'black'}; font-weight: {'bold' if dd_val >= 1000 else 'normal'};"
@@ -1781,22 +1826,7 @@ def main():
                                 f.write("</tr>\n", short=False)
                                 f.write("</tbody>\n", short=False)
 
-                                # Short Report: Single row in clubbed table
-                                breach_str = f"L{breach_idx}-L{breach_idx+1}" if breach_idx != -1 else "N/A"
-                                f.write("<tr>", full=False)
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s_row.get('Type', 'N/A')}</td>", full=False)
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd;'>{s_row.get('Date', 'N/A')}</td>", full=False)
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s_row.get('BasePipGap', 'N/A')}</td>", full=False)
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{s_row.get('FXFactor', 'N/A')}</td>", full=False)
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>{breach_str}</td>", full=False)
-                                f.write(f"<td style='padding: 8px; border: 1px solid #ddd; text-align: center; font-weight: bold; color: red;'>{k1_gap_val_str}</td>", full=False)
-                                f.write("</tr>\n", full=False)
-
-                            # Close short report table body
-                            f.write("</tbody>\n", full=False)
-                            
-                            # Final close for both
-                            f.write("</table></div></li>\n")
+                            f.write("</table></div></li>\n", short=False)
                             
                             # --- New Table: 1k Drawdown Threshold vs. Starting Lot (Horizontal) ---
                             try:
@@ -1884,13 +1914,13 @@ def main():
                                     
                                     f.write("</tbody></table></div></li>\n", short=False)
                             except Exception as ex_sim:
-                                f.write(f"<li><strong style='color: red;'>Simulation Error</strong>: {ex_sim}</li>\n")
+                                f.write(f"<li><strong style='color: red;'>Simulation Error</strong>: {ex_sim}</li>\n", short=(status == "Included"))
                         elif 'theoretical_skip_reason' in locals() and theoretical_skip_reason:
-                            f.write(f"<li><strong style='color: #856404;'>Theoretical DD Skipped</strong>: {theoretical_skip_reason}</li>\n")
+                            f.write(f"<li><strong style='color: #856404;'>Theoretical DD Skipped</strong>: {theoretical_skip_reason}</li>\n", short=(status == "Included"))
 
                     
-                    f.write("</ul>\n")
-                    f.write(f"<div class='chart-container'><img src='charts/Chart_{report_basename}.png' alt='{report_basename} Charts'></div>\n\n")
+                    f.write("</ul>\n", short=(status == "Included"))
+                    f.write(f"<div class='chart-container'><img src='charts/Chart_{report_basename}.png' alt='{report_basename} Charts'></div>\n\n", short=(status == "Included"))
 
         f.write("\n</body>\n</html>")
 
